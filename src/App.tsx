@@ -1,12 +1,12 @@
-import { useState, useRef } from 'react'
-import { PseudoRandom } from './utils/PseudoRandom'
-import { GenerateMap } from './utils/GenerateMap'
+//import { useState, useRef } from 'react'
+//import { PseudoRandom } from './utils/PseudoRandom'
+//import { GenerateMap } from './utils/GenerateMap'
 import './App.css'
 
-const mapTypes = ['Cave', 'Dungeon'];
+//const mapTypes = ['Cave', 'Dungeon'];
 
 function App() {
-  const [mapID, setMapID] = useState(0)
+  /*const [mapID, setMapID] = useState(0)
   const [seed, setSeed] = useState<number | null>(null)
   const [pixiContainer, setPixiContainer] = useState<HTMLDivElement | null>(null)
   const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0]);
@@ -47,7 +47,7 @@ function App() {
         ))}
       </select>
     );
-  }
+  }*/
 
   return (
     <>
