@@ -1,5 +1,41 @@
+#app-container {
+  width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  display: flex;
+  overflow: clip;
+}
+
+#left-panel {
+  width: 20%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+}
+
+#metadata {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+#seed-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+#right-panel {
+  width: 80%;
+  height: 100%;
+}
+
 #pixi-container {
-  width: 500px;
-  height: 500px;
-  margin: 16px auto;
+  width: 100%;
+  height: 100%;
 }

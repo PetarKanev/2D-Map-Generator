@@ -10,7 +10,7 @@
 // The five Px constants are odd primes with no obvious bit patterns; they
 // interact with 32-bit overflow to scatter bits chaotically. P1 is unused here
 // because it only appears in the main stripe loop for inputs >= 16 bytes.
-export function PseudoRandom(seed: number | null): [number, number] {
+export function pseudoRandom(seed: number | null): [number, number] {
   if (seed === null) seed = Math.floor(Math.random() * 100000000);
 
   const P2 = 0x85EBCA77;

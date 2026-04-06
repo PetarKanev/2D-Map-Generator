@@ -1,72 +1,68 @@
 import { useState, useRef } from 'react'
-import { PseudoRandom } from './utils/PseudoRandom'
+import { pseudoRandom } from './utils/PseudoRandom'
 import { GenerateMap } from './utils/GenerateMap'
+import type { CaveMetadata } from './utils/GenerateMap'
+import { SimpleSelect } from './utils/RenderFunctions'
 import './App.css'
 
 const mapTypes = ['Cave', 'Dungeon'];
+
+function formatTime(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${ms}ms (${minutes}m ${seconds}s)`;
+}
 
 function App() {
   const [mapID, setMapID] = useState(0)
   const [seed, setSeed] = useState<number | null>(null)
   const [pixiContainer, setPixiContainer] = useState<HTMLDivElement | null>(null)
-  const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0]);
-
-  // Track the last seed used for generation
+  const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0])
+  const [metadata, setMetadata] = useState<CaveMetadata | null>(null)
   const lastUsedSeed = useRef<number | null>(null)
 
   function handleSeedChange(e: React.ChangeEvent<HTMLInputElement>) {
-    // Only allow numeric input
     if (/^\d*$/.test(e.target.value)) {
       setSeed(e.target.value ? Number(e.target.value) : null);
     }
   }
 
-  // Set Map ID and seed after generating a new random value
-  async function handleGenerateRandom([mapID, mapSeed]: [number, number]) {
-    setMapID(mapID);
+  async function handleGenerate() {
+    const seedForGenerate = seed === lastUsedSeed.current ? null : seed;
+    const [newMapID, mapSeed] = pseudoRandom(seedForGenerate);
+    setMapID(newMapID);
     setSeed(mapSeed);
-
-    // Map generator
-    await GenerateMap(mapSeed, selectedMapType, pixiContainer);
+    const result = await GenerateMap(mapSeed, selectedMapType, pixiContainer);
+    setMetadata(result);
     lastUsedSeed.current = mapSeed;
   }
 
-  // Keep track of the last used seed to prevent generating the same map when the user clicks "Generate" multiple times without 
-  // changing the seed. If the current seed is the same as the last used seed, return null to trigger generation of a new random seed.
-  function getSeedForGenerate(): number | null {
-    return seed === lastUsedSeed.current ? null : seed;
-  }
-
-  function getSelect(options: string[], value: string | null, onChange: (value: string | null) => void) {
-    return (
-      <select value={value ?? ''} onChange={(e) => onChange(e.target.value || null)}>
-        {options.map((type) => (
-          <option key={type} value={type}>
-            {type}
-          </option>
-        ))}
-      </select>
-    );
-  }
-
   return (
-    <>
-      <div>
+    <div id="app-container">
+      <div id="left-panel">
         <div>Map ID: {mapID}</div>
-
-        <div>
-          Seed: <input type="text" value={seed ?? ''} onChange={handleSeedChange} />
-          <button onClick={() => handleGenerateRandom(PseudoRandom(getSeedForGenerate()))}>
-            Generate
-          </button>
+        <div id="seed-row">
+          <label>Seed:</label>
+          <input type="text" value={seed ?? ''} onChange={handleSeedChange} />
         </div>
         <div>
-          Map Type: {getSelect(mapTypes, selectedMapType, setSelectedMapType)}
+          Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
         </div>
-        <div ref={setPixiContainer} id="pixi-container" />
-
+        <button onClick={handleGenerate}>Generate</button>
+        {metadata && (
+          <div id="metadata">
+            <div>Rooms: {metadata.roomCount}</div>
+            <div>Floor: {metadata.floorPercent}%</div>
+            <div>Time: {formatTime(metadata.generationTimeMs)}</div>
+            <div>Smoothing passes: {metadata.rogueIterations}</div>
+          </div>
+        )}
       </div>
-    </>
+      <div id="right-panel">
+        <div ref={setPixiContainer} id="pixi-container" />
+      </div>
+    </div>
   )
 }
 
