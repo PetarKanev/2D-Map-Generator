@@ -1,8 +1,8 @@
 import { useState, useRef } from 'react'
 import { pseudoRandom } from './utils/PseudoRandom'
-import { GenerateMap } from './utils/GenerateMap'
-import type { CaveMetadata } from './utils/GenerateMap'
-import { SimpleSelect } from './utils/RenderFunctions'
+import { GenerateMap } from './rendering/GenerateMap'
+import type { CaveMetadata } from './rendering/GenerateMap'
+import { SimpleSelect } from './components/SimpleSelect'
 import './App.css'
 
 const mapTypes = ['Cave', 'Dungeon'];
@@ -21,6 +21,7 @@ function App() {
   const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0])
   const [metadata, setMetadata] = useState<CaveMetadata | null>(null)
   const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
+  const [isLoading, setIsLoading] = useState(false)
   
   const lastUsedSeed = useRef<number | null>(null)
   const lastUsedPreferDiagonal = useRef<boolean>(true)
@@ -37,8 +38,15 @@ function App() {
     
     setMapID(newMapID);
     setSeed(mapSeed);
-    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal));
+    setIsLoading(true);
     
+    // Yield to allow loading overlay to render before 
+    // heavy generation starts, 0ms overhead should not 
+    // affect performance but ensures UI responsiveness.
+    await new Promise(resolve => setTimeout(resolve, 0)); 
+    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal));
+    setIsLoading(false);
+
     lastUsedSeed.current = mapSeed;
     lastUsedPreferDiagonal.current = preferDiagonal;
   }
@@ -70,6 +78,7 @@ function App() {
         )}
       </div>
       <div id="right-panel">
+        {isLoading && <div id="loading-overlay">Generating</div>}
         <div ref={setPixiContainer} id="pixi-container" />
       </div>
     </div>

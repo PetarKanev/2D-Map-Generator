@@ -1,5 +1,5 @@
-import { pseudoRandom } from './PseudoRandom';
-import { applySmoothMap, removeRogueTiles } from './SmoothMap';
+import { pseudoRandom } from '../utils/PseudoRandom';
+import { applySmoothMap, removeRogueTiles } from '../utils/SmoothMap';
 
 let GRID_WIDTH = 100;
 let GRID_HEIGHT = 100;

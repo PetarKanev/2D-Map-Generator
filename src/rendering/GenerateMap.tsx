@@ -1,13 +1,40 @@
 import { Application, Graphics } from 'pixi.js';
-import { generateCaveGrid } from './CaveGenerator';
-import type { CaveMetadata } from './CaveGenerator';
-import { generateDungeonGrid } from './DungeonGenerator';
+import type { CaveMetadata } from '../generators/CaveGenerator';
+import { generateDungeonGrid } from '../generators/DungeonGenerator';
+// Vite bundles the worker as a separate chunk via the ?worker suffix
+import CaveWorker from '../workers/caveWorker.ts?worker';
 
 export type { CaveMetadata };
 
 const CELL_SIZE = 5;
 let pixiApp: Application | null = null;
 let isGenerating = false;
+
+// Single persistent worker instance — created once, reused across generations
+let caveWorker: Worker | null = null;
+
+function getCaveWorker(): Worker {
+  if (caveWorker === null) {
+    caveWorker = new CaveWorker();
+  }
+  return caveWorker;
+}
+
+// Wraps the worker postMessage/onmessage pair in a Promise so callers can await it
+function runCaveWorker(
+  seed: number,
+  width: number,
+  height: number,
+  preferDiagonal: boolean
+): Promise<{ grid: number[][], metadata: CaveMetadata }> {
+  return new Promise((resolve, reject) => {
+    const worker = getCaveWorker();
+    // One-shot listeners: replaced on each call so concurrent calls don't cross
+    worker.onmessage = (e) => resolve(e.data);
+    worker.onerror = (e) => reject(e);
+    worker.postMessage({ seed, width, height, preferDiagonal });
+  });
+}
 
 export async function GenerateMap(
   seed: number,
@@ -75,29 +102,31 @@ async function generateCave(seed: number, container: HTMLDivElement, preferDiago
   isGenerating = true;
   let result: CaveMetadata | null = null;
 
-  try {
-    if (pixiApp !== null) {
-      pixiApp.destroy(true, { children: true });
-      pixiApp = null;
-    }
+  // Load animation test (ignore this):
+  //await new Promise(resolve => setTimeout(resolve, 3000));
 
+  try {
     const gridWidth = Math.max(10, Math.floor(container.clientWidth / CELL_SIZE));
     const gridHeight = Math.max(10, Math.floor(container.clientHeight / CELL_SIZE));
-    const { grid, metadata } = generateCaveGrid(seed, gridWidth, gridHeight, preferDiagonal);
+    const { grid, metadata } = await runCaveWorker(seed, gridWidth, gridHeight, preferDiagonal);
     result = metadata;
 
     const wallDepth = computeWallDepth(grid);
 
-    pixiApp = new Application();
-    await pixiApp.init({
-      width: gridWidth * CELL_SIZE,
-      height: gridHeight * CELL_SIZE,
-      backgroundColor: 0x000000,
-      antialias: false,
-      preference: 'webgl',
-    });
-
-    container.appendChild(pixiApp.canvas);
+    if (pixiApp === null) {
+      pixiApp = new Application();
+      await pixiApp.init({
+        width: gridWidth * CELL_SIZE,
+        height: gridHeight * CELL_SIZE,
+        backgroundColor: 0x000000,
+        antialias: false,
+        preference: 'webgl',
+      });
+      container.appendChild(pixiApp.canvas);
+    } else {
+      pixiApp.renderer.resize(gridWidth * CELL_SIZE, gridHeight * CELL_SIZE);
+      pixiApp.stage.removeChildren();
+    }
 
     const graphics = new Graphics();
 

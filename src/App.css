@@ -38,8 +38,34 @@
 }
 
 #right-panel {
+  position: relative;
+  background-color: black;
   width: 80%;
   height: 100%;
+}
+
+#loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 1.2rem;
+  z-index: 10;
+}
+
+#loading-overlay::after {
+  content: '';
+  animation: loading-dots 0.8s steps(1, end) infinite;
+}
+
+@keyframes loading-dots {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
 }
 
 #pixi-container {

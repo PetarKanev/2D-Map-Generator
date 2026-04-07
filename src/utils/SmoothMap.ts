@@ -91,6 +91,22 @@ export function removeRogueTiles(grid: number[][], maxIterations: number): numbe
         } else if (grid[y][x] === FLOOR && wallCount >= 5) {
           grid[y][x] = WALL;
           changed = true;
+        } else if (grid[y][x] === FLOOR) {
+          // A floor tile connected to another floor tile only diagonally (both bridging
+          // cardinals are walls) creates an invalid walk path — convert it to a wall.
+          for (const [dy, dx] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+            const ny = y + dy;
+            const nx = x + dx;
+            if (ny < 0 || ny >= height || nx < 0 || nx >= width) { continue; }
+            if (grid[ny][nx] !== FLOOR) { continue; }
+            const hBridge = grid[y][nx];   // horizontal bridge cell
+            const vBridge = grid[ny][x];   // vertical bridge cell
+            if (hBridge === WALL && vBridge === WALL) {
+              grid[y][x] = WALL;
+              changed = true;
+              break;
+            }
+          }
         }
       }
     }

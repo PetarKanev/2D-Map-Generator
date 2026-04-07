@@ -1,4 +1,4 @@
-import { pseudoRandom } from './PseudoRandom';
+import { pseudoRandom } from '../utils/PseudoRandom';
 
 // Grid dimensions. Each cell renders as CELL_SIZE px (set in GenerateMap.tsx),
 // giving a GRID_WIDTH × CELL_SIZE by GRID_HEIGHT × CELL_SIZE pixel canvas.
