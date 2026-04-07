@@ -20,7 +20,10 @@ function App() {
   const [pixiContainer, setPixiContainer] = useState<HTMLDivElement | null>(null)
   const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0])
   const [metadata, setMetadata] = useState<CaveMetadata | null>(null)
+  const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
+  
   const lastUsedSeed = useRef<number | null>(null)
+  const lastUsedPreferDiagonal = useRef<boolean>(true)
 
   function handleSeedChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (/^\d*$/.test(e.target.value)) {
@@ -29,13 +32,15 @@ function App() {
   }
 
   async function handleGenerate() {
-    const seedForGenerate = seed === lastUsedSeed.current ? null : seed;
-    const [newMapID, mapSeed] = pseudoRandom(seedForGenerate);
+    const configUnchanged = seed === lastUsedSeed.current && preferDiagonal === lastUsedPreferDiagonal.current;
+    const [newMapID, mapSeed] = pseudoRandom(configUnchanged ? null : seed);
+    
     setMapID(newMapID);
     setSeed(mapSeed);
-    const result = await GenerateMap(mapSeed, selectedMapType, pixiContainer);
-    setMetadata(result);
+    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal));
+    
     lastUsedSeed.current = mapSeed;
+    lastUsedPreferDiagonal.current = preferDiagonal;
   }
 
   return (
@@ -47,15 +52,20 @@ function App() {
           <input type="text" value={seed ?? ''} onChange={handleSeedChange} />
         </div>
         <div>
-          Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
+        Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
+        </div>
+        <div>
+        Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />
         </div>
         <button onClick={handleGenerate}>Generate</button>
         {metadata && (
-          <div id="metadata">
+          <div id="metadata"> 
+            <div id="metadata-title">Metadata</div>
             <div>Rooms: {metadata.roomCount}</div>
             <div>Floor: {metadata.floorPercent}%</div>
-            <div>Time: {formatTime(metadata.generationTimeMs)}</div>
+            <div>Runtime: {formatTime(metadata.generationTimeMs)}</div>
             <div>Smoothing passes: {metadata.rogueIterations}</div>
+            <div>Diagonal Entrances: {metadata.preferDiagonal ? 'Yes' : 'No'}</div>
           </div>
         )}
       </div>

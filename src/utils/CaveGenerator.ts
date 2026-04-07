@@ -5,7 +5,7 @@ let GRID_WIDTH = 100;
 let GRID_HEIGHT = 100;
 
 // Probability that any interior cell starts as a wall.
-const RANDOM_FILL_PERCENT = 0.48;
+const RANDOM_FILL_PERCENT = 0.50;
 
 const SMOOTH_ITERATIONS = 5;
 
@@ -30,6 +30,14 @@ interface Room {
   tiles: Coord[];
   edgeTiles: Coord[];
   roomSize: number;
+}
+
+export interface CaveMetadata {
+  roomCount: number;
+  floorPercent: number;
+  generationTimeMs: number;
+  rogueIterations: number;
+  preferDiagonal?: boolean;
 }
 
 // Factory — builds a Room and computes its unique edge tiles.
@@ -60,15 +68,8 @@ function createRoom(tiles: Coord[], grid: number[][]): Room {
   return { tiles, edgeTiles, roomSize: tiles.length };
 }
 
-export interface CaveMetadata {
-  roomCount: number;
-  floorPercent: number;
-  generationTimeMs: number;
-  rogueIterations: number;
-}
-
 // Entry point. Returns the grid and generation metadata.
-export function generateCaveGrid(seed: number, width: number, height: number): { grid: number[][], metadata: CaveMetadata } {
+export function generateCaveGrid(seed: number, width: number, height: number, preferDiagonal: boolean): { grid: number[][], metadata: CaveMetadata } {
   const startTime = performance.now();
 
   GRID_WIDTH = width;
@@ -93,7 +94,7 @@ export function generateCaveGrid(seed: number, width: number, height: number): {
     grid[y][GRID_WIDTH - 1] = WALL;
   }
 
-  placeEntranceAndExit(grid);
+  placeEntranceAndExit(grid, preferDiagonal);
 
   const rogueIterations = removeRogueTiles(grid, 100);
 
@@ -101,7 +102,7 @@ export function generateCaveGrid(seed: number, width: number, height: number): {
   const floorPercent = Math.round((floorCells / (GRID_WIDTH * GRID_HEIGHT)) * 100);
   const generationTimeMs = Math.round(performance.now() - startTime);
 
-  return { grid, metadata: { roomCount, floorPercent, generationTimeMs, rogueIterations } };
+  return { grid, metadata: { roomCount, floorPercent, generationTimeMs, rogueIterations, preferDiagonal } };
 }
 
 // Fills the grid with a deterministic random noise based on the seed.
@@ -124,10 +125,11 @@ function randomFillMap(grid: number[][], seed: number): void {
   }
 }
 
-//   1. Remove small wall blobs (open them up).
-//   2. Remove small floor regions (fill them in).
-//   3. Connect all surviving rooms so the map is fully traversable.
-//   4. Place entrance and exit markers.
+// Cleans up the map and connects all rooms:
+//   1. Remove small wall blobs (< WALL_THRESHOLD tiles) — converts them to floor.
+//   2. Remove small floor regions (< ROOM_THRESHOLD tiles) — converts them to wall.
+//   3. Connect all surviving rooms via Prim's MST so the map is fully traversable.
+// Returns the number of surviving rooms.
 function processMap(grid: number[][]): number {
   const wallRegions = getRegions(grid, WALL);
   for (const region of wallRegions) {
@@ -402,29 +404,36 @@ function findBestOpeningPerQuadrant(grid: number[][]): (BorderOpening | null)[] 
   return best;
 }
 
+function openingDistance(a: BorderOpening, b: BorderOpening): number {
+  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
+}
+
 // Places a 3×1 entrance and a 3×1 exit on the map border in different quadrants
 // (preferring opposite quadrants), each connected to the nearest floor cell
 // via a straight 1-cell-wide corridor.
-function placeEntranceAndExit(grid: number[][]): void {
+function placeEntranceAndExit(grid: number[][], preferDiagonal: boolean): void {
   const best = findBestOpeningPerQuadrant(grid);
+  const minDist = GRID_WIDTH / 4;
 
-  // Prefer diagonally opposite quadrant pairs.
   let entranceOpening: BorderOpening | null = null;
   let exitOpening: BorderOpening | null = null;
 
-  for (const [a, b] of [[0, 3], [1, 2]] as [number, number][]) {
-    if (best[a] !== null && best[b] !== null) {
-      entranceOpening = best[a];
-      exitOpening = best[b];
-      break;
+  // Prefer diagonally opposite quadrant pairs when requested.
+  if (preferDiagonal) {
+    for (const [a, b] of [[0, 3], [1, 2]] as [number, number][]) {
+      if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
+        entranceOpening = best[a];
+        exitOpening = best[b];
+        break;
+      }
     }
   }
 
-  // Fallback: any two quadrants with valid openings.
+  // Fallback (or primary when preferDiagonal is false): any two quadrants with valid openings far enough apart.
   if (entranceOpening === null) {
     outer: for (let a = 0; a < 4; a++) {
       for (let b = a + 1; b < 4; b++) {
-        if (best[a] !== null && best[b] !== null) {
+        if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
           entranceOpening = best[a];
           exitOpening = best[b];
           break outer;

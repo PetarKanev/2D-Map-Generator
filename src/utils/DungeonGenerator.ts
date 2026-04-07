@@ -236,12 +236,8 @@ function placeEntranceAndExit(grid: number[][], rooms: Room[], seed: number): vo
     exitIdx = deepestRoom(exitPool, rooms, horizontal, !entranceInFirstHalf);
   }
 
-  // Derive independent seeds for each opening's connecting hallway.
-  const [entranceSeed] = pseudoRandom(sideVal);
-  const [exitSeed] = pseudoRandom(entranceSeed);
-
-  carveEdgeOpening(grid, rooms[entranceIdx], horizontal, entranceInFirstHalf, ENTRANCE, entranceSeed);
-  carveEdgeOpening(grid, rooms[exitIdx], horizontal, !entranceInFirstHalf, EXIT, exitSeed);
+  carveEdgeOpening(grid, rooms[entranceIdx], horizontal, entranceInFirstHalf, ENTRANCE);
+  carveEdgeOpening(grid, rooms[exitIdx], horizontal, !entranceInFirstHalf, EXIT);
 }
 
 // Carves a 3-cell-wide opening on the map border and connects it to the room
@@ -254,8 +250,7 @@ function carveEdgeOpening(
   room: Room,
   horizontal: boolean,
   inFirstHalf: boolean,
-  cellValue: number,
-  seed: number
+  cellValue: number
 ): void {
   const [rx, ry] = roomCenter(room);
 

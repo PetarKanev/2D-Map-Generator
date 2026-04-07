@@ -12,6 +12,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  text-align: left;
   gap: 8px;
   padding: 8px;
 }
@@ -21,6 +22,12 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+}
+
+#metadata-title {
+  width: 100%;
+  font-weight: bold;
+  text-align: center;
 }
 
 #seed-row {

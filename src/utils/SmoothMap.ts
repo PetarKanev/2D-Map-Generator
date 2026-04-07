@@ -1,10 +1,10 @@
 const FLOOR = 0;
 const WALL = 1;
 
-// Applies one pass of cellular automata smoothing to the grid.
+// Applies one pass of cellular automata smoothing to the grid using double buffering
+// so all cells are evaluated against the same generation before any changes are applied.
 // A cell becomes floor if it has fewer than 4 wall neighbours,
 // becomes wall if it has more than 4, and keeps its current state if exactly 4.
-// Uses double buffering so all cells are evaluated against the same generation.
 // Out-of-bounds neighbours are treated as walls (preserves the enclosed border).
 function smoothMap(grid: number[][]): void {
   const height = grid.length;
@@ -36,7 +36,7 @@ function smoothMap(grid: number[][]): void {
 }
 
 // Counts the Moore neighbours (8 directions) of (x, y) that are walls.
-// Entrance/exit cells (2, 3) are treated as floor, not walls.
+// Only value 1 (WALL) counts — entrance/exit cells (2, 3) are treated as floor.
 function countWallNeighbours(
   grid: number[][],
   x: number,
