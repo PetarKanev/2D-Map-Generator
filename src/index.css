@@ -30,7 +30,9 @@
   }
 }
 
-@media (prefers-color-scheme: dark) {
+/* Apply dark palette for both explicit dark mode and light mode browsers —
+   this app always renders dark regardless of system preference. */
+@media (prefers-color-scheme: dark), (prefers-color-scheme: light) {
   :root {
     --text: #9ca3af;
     --text-h: #f3f4f6;
@@ -44,7 +46,6 @@
     --shadow:
       rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
   }
-
 }
 
 #root {
@@ -63,3 +64,7 @@ body {
   margin: 0;
 }
 
+input, select, button {
+  color: #000;
+  background: #fff;
+}

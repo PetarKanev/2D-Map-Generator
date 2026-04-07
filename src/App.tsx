@@ -3,15 +3,13 @@ import { pseudoRandom } from './utils/PseudoRandom'
 import { GenerateMap } from './rendering/GenerateMap'
 import type { CaveMetadata } from './rendering/GenerateMap'
 import { SimpleSelect } from './components/SimpleSelect'
+import { version } from '../package.json'
 import './App.css'
 
-const mapTypes = ['Cave', 'Dungeon'];
+const mapTypes = ['Cave'/*, 'Dungeon'*/];
 
 function formatTime(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${ms}ms (${minutes}m ${seconds}s)`;
+  return `${ms}ms`;
 }
 
 function App() {
@@ -39,7 +37,7 @@ function App() {
     setMapID(newMapID);
     setSeed(mapSeed);
     setIsLoading(true);
-    
+
     // Yield to allow loading overlay to render before 
     // heavy generation starts, 0ms overhead should not 
     // affect performance but ensures UI responsiveness.
@@ -54,6 +52,7 @@ function App() {
   return (
     <div id="app-container">
       <div id="left-panel">
+        <div id='app-version'>v{version}</div>
         <div>Map ID: {mapID}</div>
         <div id="seed-row">
           <label>Seed:</label>
