@@ -1,12 +1,17 @@
 import { useState, useRef } from 'react'
 import { pseudoRandom } from './utils/PseudoRandom'
 import { GenerateMap } from './rendering/GenerateMap'
-import type { CaveMetadata } from './rendering/GenerateMap'
 import { SimpleSelect } from './components/SimpleSelect'
-import { version } from '../package.json'
+import { version, repository } from '../package.json'
+
+import type { MapMetadata } from './rendering/GenerateMap'
+
 import './App.css'
 
-const mapTypes = ['Cave'/*, 'Dungeon'*/];
+const mapTypes = [
+  {label:'Cave', value: 'Cave', disabled: false}, 
+  {label:'Dungeon -- WIP', value: 'Dungeon', disabled: true}
+];
 
 function formatTime(ms: number): string {
   return `${ms}ms`;
@@ -16,8 +21,8 @@ function App() {
   const [mapID, setMapID] = useState(0)
   const [seed, setSeed] = useState<number | null>(null)
   const [pixiContainer, setPixiContainer] = useState<HTMLDivElement | null>(null)
-  const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0])
-  const [metadata, setMetadata] = useState<CaveMetadata | null>(null)
+  const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0].value)
+  const [metadata, setMetadata] = useState<MapMetadata | null>(null)
   const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
   const [isLoading, setIsLoading] = useState(false)
   
@@ -52,7 +57,9 @@ function App() {
   return (
     <div id="app-container">
       <div id="left-panel">
-        <div id='app-version'>v{version}</div>
+        <div id='app-version'>
+          v{version} — <a href={repository.url} target="_blank" rel="noreferrer">GitHub</a>
+        </div>
         <div>Map ID: {mapID}</div>
         <div id="seed-row">
           <label>Seed:</label>
@@ -71,7 +78,7 @@ function App() {
             <div>Rooms: {metadata.roomCount}</div>
             <div>Floor: {metadata.floorPercent}%</div>
             <div>Runtime: {formatTime(metadata.generationTimeMs)}</div>
-            <div>Smoothing passes: {metadata.rogueIterations}</div>
+            {'rogueIterations' in metadata && <div>Smoothing passes: {metadata.rogueIterations}</div>}
             <div>Diagonal Entrances: {metadata.preferDiagonal ? 'Yes' : 'No'}</div>
           </div>
         )}
