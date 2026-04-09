@@ -1,21 +1,33 @@
 import { Application, Graphics } from 'pixi.js';
 
-export const CELL_SIZE = 5;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-let pixiApp: Application | null = null;
+export const CELL_SIZE = 5; // pixels per grid tile
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let pixiApp: Application | null = null; // single persistent PixiJS instance
+
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
 
 export interface PaintOptions {
   floorColor: number;
-  // Flat wall color — used when wallDepth is not provided
-  wallFlatColor?: number;
-  // Depth-shaded walls — pairs of [bfsDistance, color]; cells deeper than the
-  // last entry remain black via the canvas background
-  wallDepth?: number[][];
-  wallDepthColors?: [number, number][];
+  wallFlatColor?: number;        // flat wall color — used when wallDepth is not provided
+  wallDepth?: number[][];        // per-tile BFS distance from nearest walkable cell
+  wallDepthColors?: [number, number][]; // pairs of [bfsDistance, color]; cells deeper than the last entry remain black
 }
 
-// BFS outward from all non-wall cells to compute each wall tile's
-// distance from the nearest walkable cell.
+// ---------------------------------------------------------------------------
+// Wall depth
+// ---------------------------------------------------------------------------
+
+/** BFS outward from all non-wall cells to compute each wall tile's distance from the nearest walkable cell. */
 export function computeWallDepth(grid: number[][]): number[][] {
   const height = grid.length;
   const width = grid[0].length;
@@ -53,7 +65,11 @@ export function computeWallDepth(grid: number[][]): number[][] {
   return depth;
 }
 
-// Creates the PixiJS app on first call; resizes and clears the stage on subsequent calls.
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+
+/** Creates the PixiJS app on first call; resizes and clears the stage on subsequent calls. */
 export async function ensurePixiApp(container: HTMLDivElement, width: number, height: number): Promise<void> {
   if (pixiApp === null) {
     pixiApp = new Application();
@@ -71,7 +87,7 @@ export async function ensurePixiApp(container: HTMLDivElement, width: number, he
   }
 }
 
-// Paints all tile types onto a Graphics object and adds it to the PixiJS stage.
+/** Paints all tile types onto a single Graphics object and adds it to the PixiJS stage. */
 export function paintGrid(grid: number[][], options: PaintOptions): void {
   const graphics = new Graphics();
 

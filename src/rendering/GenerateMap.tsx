@@ -5,27 +5,47 @@ import { CELL_SIZE, computeWallDepth, ensurePixiApp, paintGrid } from './PixiRen
 import CaveWorker from '../workers/caveWorker.ts?worker';
 import DungeonWorker from '../workers/dungeonWorker.ts?worker';
 
-export type MapMetadata = CaveMetadata | DungeonMetadata;
-export type { CaveMetadata };
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-let isGenerating = false;
+export type MapMetadata = CaveMetadata | DungeonMetadata;
+export type { CaveMetadata, DungeonMetadata };
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let isGenerating = false; // guard against concurrent generation calls
 
 // Single persistent worker instances — created once, reused across generations
 let caveWorker: Worker | null = null;
 let dungeonWorker: Worker | null = null;
 
+// ---------------------------------------------------------------------------
+// Worker access
+// ---------------------------------------------------------------------------
+
+/** Returns the shared CaveWorker, creating it on first access. */
 function getCaveWorker(): Worker {
   if (caveWorker === null) { caveWorker = new CaveWorker(); }
   return caveWorker;
 }
 
+/** Returns the shared DungeonWorker, creating it on first access. */
 function getDungeonWorker(): Worker {
   if (dungeonWorker === null) { dungeonWorker = new DungeonWorker(); }
   return dungeonWorker;
 }
 
-// Wrap each worker's postMessage/onmessage in a Promise so callers can await it.
-// One-shot listeners are replaced on each call so concurrent calls don't cross.
+// ---------------------------------------------------------------------------
+// Worker runners
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps the cave worker's postMessage/onmessage in a Promise.
+ * The listener is replaced on each call so concurrent calls don't cross-resolve.
+ */
 function runCaveWorker(
   seed: number, width: number, height: number, preferDiagonal: boolean
 ): Promise<{ grid: number[][], metadata: CaveMetadata }> {
@@ -37,6 +57,10 @@ function runCaveWorker(
   });
 }
 
+/**
+ * Wraps the dungeon worker's postMessage/onmessage in a Promise.
+ * The listener is replaced on each call so concurrent calls don't cross-resolve.
+ */
 function runDungeonWorker(
   seed: number, width: number, height: number, preferDiagonal: boolean
 ): Promise<{ grid: number[][], metadata: DungeonMetadata }> {
@@ -48,21 +72,11 @@ function runDungeonWorker(
   });
 }
 
-export async function GenerateMap(
-  seed: number,
-  mapType: string | null,
-  container: HTMLDivElement | null,
-  preferDiagonal: boolean = true
-): Promise<MapMetadata | null> {
-  if (container === null) { return null; }
+// ---------------------------------------------------------------------------
+// Map generators
+// ---------------------------------------------------------------------------
 
-  switch (mapType) {
-    case 'Cave':    return await generateCave(seed, container, preferDiagonal);
-    case 'Dungeon': return await generateDungeon(seed, container, preferDiagonal);
-    default:        return null;
-  }
-}
-
+/** Generates a cave map, renders it, and returns its metadata. */
 async function generateCave(seed: number, container: HTMLDivElement, preferDiagonal: boolean): Promise<CaveMetadata | null> {
   if (isGenerating) { return null; }
   isGenerating = true;
@@ -91,6 +105,7 @@ async function generateCave(seed: number, container: HTMLDivElement, preferDiago
   return result;
 }
 
+/** Generates a dungeon map, renders it, and returns its metadata. */
 async function generateDungeon(seed: number, container: HTMLDivElement, preferDiagonal: boolean): Promise<DungeonMetadata | null> {
   if (isGenerating) { return null; }
   isGenerating = true;
@@ -112,4 +127,24 @@ async function generateDungeon(seed: number, container: HTMLDivElement, preferDi
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/** Dispatches to the appropriate generator based on mapType and returns its metadata. */
+export async function GenerateMap(
+  seed: number,
+  mapType: string | null,
+  container: HTMLDivElement | null,
+  preferDiagonal: boolean = true
+): Promise<MapMetadata | null> {
+  if (container === null) { return null; }
+
+  switch (mapType) {
+    case 'Cave':    return await generateCave(seed, container, preferDiagonal);
+    case 'Dungeon': return await generateDungeon(seed, container, preferDiagonal);
+    default:        return null;
+  }
 }

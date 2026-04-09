@@ -1,36 +1,71 @@
 import { pseudoRandom } from '../utils/PseudoRandom';
 
-let GRID_WIDTH = 100;
-let GRID_HEIGHT = 100;
-
 const FLOOR = 0;
 const WALL = 1;
 const ENTRANCE = 2;
 const EXIT = 3;
 
-const MIN_ROOM_W = 4;
-const MAX_ROOM_W = 12;
-const MIN_ROOM_H = 4;
-const MAX_ROOM_H = 10;
-const ROOM_BUFFER = 1;
-const DEVIATION_CHANCE = 0.25;
+// Dungeon generation parameters
+const MIN_ROOM_RADIUS = 8;  // minimum half-extent of any room (produces an 17×17 tile room)
+const MAX_ROOM_RADIUS = 20; // maximum half-extent of any room (produces an 41×41 tile room)
+const BORDER = 5;           // minimum tiles between any room edge and the map boundary
+
+// ---------------------------------------------------------------------------
+// Module-level RNG state — initialized once per generateDungeonGrid call.
+// Safe in a Web Worker (single-threaded, synchronous generation).
+// ---------------------------------------------------------------------------
+let _rngSeed = 0;
+
+/** Advance the RNG and return the raw 32-bit hash value. */
+function rand(): number {
+  const [val] = pseudoRandom(_rngSeed);
+  _rngSeed = val;
+  return val;
+}
+
+/** Uniform float in [0, 1). */
+function randFloat(): number {
+  return rand() / 0xFFFFFFFF;
+}
+
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
 
 interface Coord {
   x: number;
   y: number;
 }
 
-// Axis-aligned bounding rectangle for a room
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+type RoomShape = 'square' | 'rect' | 'rounded' | 'lshape';
+
+/** Second rectangle of an L-shaped room, offset from the room centre. */
+interface RoomArm {
+  dx: number; dy: number; // centre offset from room cx/cy
+  hw: number; hh: number; // half-extents of the arm rectangle
+}
+
+/** A room defined by its centre, base radius, actual half-extents, and carved shape. */
+interface Room {
+  cx: number;
+  cy: number;
+  radius: number; // sampled base radius — shapes may extend or contract from this
+  hw: number;     // carved half-width  (x extent from centre)
+  hh: number;     // carved half-height (y extent from centre)
+  shape: RoomShape;
+  arm?: RoomArm;  // second rectangle for L-shaped rooms only
+}
+
+/** A carved hallway connecting two rooms via their side exit points. */
+export interface Corridor {
+  from: Coord;   // exit point on the departing room's wall
+  to: Coord;     // entry point on the arriving room's wall
+  width: number; // tile width of the carved passage (2 or 3)
 }
 
 interface BorderOpening {
-  cx: number;
-  cy: number;
+  cx: number;       // center x of the 3-cell stamp
+  cy: number;       // center y of the 3-cell stamp
   edge: 'top' | 'bottom' | 'left' | 'right';
   quadrant: number; // 0=TL, 1=TR, 2=BL, 3=BR
   distToFloor: number;
@@ -39,12 +74,16 @@ interface BorderOpening {
 
 export interface DungeonMetadata {
   roomCount: number;
+  corridors: Corridor[];
   floorPercent: number;
   generationTimeMs: number;
   preferDiagonal?: boolean;
 }
 
-// Entry point — returns the grid and generation metadata.
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
 export function generateDungeonGrid(
   seed: number,
   width: number,
@@ -53,281 +92,348 @@ export function generateDungeonGrid(
 ): { grid: number[][], metadata: DungeonMetadata } {
   const startTime = performance.now();
 
-  GRID_WIDTH = width;
-  GRID_HEIGHT = height;
+  _rngSeed = seed; // seed the module-level RNG once
 
-  // Start from solid rock — rooms and corridors are carved in
-  const grid: number[][] = Array.from({ length: GRID_HEIGHT }, () =>
-    new Array(GRID_WIDTH).fill(WALL)
-  );
+  // Start from solid rock — rooms are carved in
+  const grid: number[][] = Array.from({ length: height }, () => new Array(width).fill(WALL));
 
-  let s = seed;
+  const rooms = placeRooms(grid, width, height);
 
-  const [rooms, nextSeed] = placeRooms(grid, s, width, height);
-  s = nextSeed;
-  s = connectRooms(grid, rooms, s, width, height);
+  const corridors = placeCorridors(grid, rooms, width, height);
 
-  // Re-enforce border walls after carving
-  for (let x = 0; x < GRID_WIDTH; x++) {
-    grid[0][x] = WALL;
-    grid[GRID_HEIGHT - 1][x] = WALL;
-  }
-  for (let y = 0; y < GRID_HEIGHT; y++) {
-    grid[y][0] = WALL;
-    grid[y][GRID_WIDTH - 1] = WALL;
-  }
-
-  placeEntranceAndExit(grid, preferDiagonal);
+  placeEntranceAndExit(grid, rooms, preferDiagonal, width, height);
 
   const floorCells = grid.flat().filter(v => v === FLOOR || v === ENTRANCE || v === EXIT).length;
-  const floorPercent = Math.round((floorCells / (GRID_WIDTH * GRID_HEIGHT)) * 100);
+  const floorPercent = Math.round((floorCells / (width * height)) * 100);
   const generationTimeMs = Math.round(performance.now() - startTime);
 
-  return { grid, metadata: { roomCount: rooms.length, floorPercent, generationTimeMs, preferDiagonal } };
+  return { grid, metadata: { roomCount: rooms.length, corridors, floorPercent, generationTimeMs, preferDiagonal } };
 }
 
-// Attempts to place up to ATTEMPTS rectangular rooms via rejection sampling.
-// Returns the placed rooms and the final seed state.
-function placeRooms(grid: number[][], seed: number, width: number, height: number): [Rect[], number] {
-  const attempts = Math.max(10, Math.floor((width * height) / 800));
-  const rooms: Rect[] = [];
-  let s = seed;
+// ---------------------------------------------------------------------------
+// Room placement
+// ---------------------------------------------------------------------------
 
-  for (let i = 0; i < attempts; i++) {
-    let val: number;
+/**
+ * Places rooms as a compact building cluster seeded near the map centre.
+ * Every subsequent room is attached directly to the side of an existing room
+ * with a small wall gap. Perpendicular position snaps to one of three
+ * shared-edge-line modes (centre, near-edge, far-edge) to produce an
+ * architectural floor-plan feel. The cluster's perpendicular extent is tracked
+ * so rooms cannot bulge past the established boundary.
+ */
+function placeRooms(grid: number[][], width: number, height: number): Room[] {
+  const ATTACH_GAP  = 3; // wall tiles between room floor edges — minimum corridor length
+  const targetCount = Math.max(6, Math.floor((width * height) / 700));
+  const rooms: Room[] = [];
 
-    [val] = pseudoRandom(s); s = val;
-    const roomW = MIN_ROOM_W + Math.floor((val / 0xFFFFFFFF) * (MAX_ROOM_W - MIN_ROOM_W + 1));
+  // Seed room — placed near the map centre with a small random jitter
+  const r0  = MIN_ROOM_RADIUS + Math.floor(randFloat() * (MAX_ROOM_RADIUS - MIN_ROOM_RADIUS + 1));
+  const cx0 = Math.round(width  / 2) + Math.floor((randFloat() - 0.5) * width  * 0.08);
+  const cy0 = Math.round(height / 2) + Math.floor((randFloat() - 0.5) * height * 0.08);
+  const { hw: hw0, hh: hh0, shape: sh0, arm: arm0 } = buildRoomShape(r0);
+  // Extend the clamp bounds to cover the arm's footprint, not just the main rect.
+  const armRelMinX0 = arm0 ? Math.min(0, arm0.dx - arm0.hw) : 0;
+  const armRelMaxX0 = arm0 ? Math.max(0, arm0.dx + arm0.hw) : 0;
+  const armRelMinY0 = arm0 ? Math.min(0, arm0.dy - arm0.hh) : 0;
+  const armRelMaxY0 = arm0 ? Math.max(0, arm0.dy + arm0.hh) : 0;
+  const seed: Room = {
+    cx: Math.max(hw0 - armRelMinX0 + BORDER, Math.min(width  - 1 - BORDER - hw0 - armRelMaxX0, cx0)),
+    cy: Math.max(hh0 - armRelMinY0 + BORDER, Math.min(height - 1 - BORDER - hh0 - armRelMaxY0, cy0)),
+    radius: r0, hw: hw0, hh: hh0, shape: sh0, arm: arm0,
+  };
+  carveRoom(grid, seed);
+  rooms.push(seed);
 
-    [val] = pseudoRandom(s); s = val;
-    const roomH = MIN_ROOM_H + Math.floor((val / 0xFFFFFFFF) * (MAX_ROOM_H - MIN_ROOM_H + 1));
+  // Cluster bounding box (full AABB including arms), kept up to date as rooms are placed.
+  const seedBB = getRoomBounds(seed);
+  let clMinX = seedBB.minX, clMaxX = seedBB.maxX;
+  let clMinY = seedBB.minY, clMaxY = seedBB.maxY;
 
-    [val] = pseudoRandom(s); s = val;
-    const roomX = 1 + Math.floor((val / 0xFFFFFFFF) * (width - roomW - 2));
+  // Grow the cluster — each new room is attached to a random existing room.
+  const maxAttempts = targetCount * 20;
+  for (let attempt = 0; attempt < maxAttempts && rooms.length < targetCount; attempt++) {
+    const parent = rooms[Math.floor(randFloat() * rooms.length)];
+    const newR   = MIN_ROOM_RADIUS + Math.floor(randFloat() * (MAX_ROOM_RADIUS - MIN_ROOM_RADIUS + 1));
+    const { hw: newHW, hh: newHH, shape: newShape, arm: newArm } = buildRoomShape(newR);
 
-    [val] = pseudoRandom(s); s = val;
-    const roomY = 1 + Math.floor((val / 0xFFFFFFFF) * (height - roomH - 2));
+    // Try all 4 attachment sides in shuffled order — first valid placement wins.
+    const sides: Array<'top' | 'bottom' | 'left' | 'right'> = ['top', 'bottom', 'left', 'right'];
+    shuffle(sides);
 
-    const candidate: Rect = { x: roomX, y: roomY, w: roomW, h: roomH };
-
-    // Reject if overlapping any existing room (with buffer gap between them)
-    if (rooms.some(r => roomsOverlap(r, candidate, ROOM_BUFFER))) {
-      continue;
-    }
-
-    // Carve room into grid
-    for (let ry = roomY; ry < roomY + roomH; ry++) {
-      for (let rx = roomX; rx < roomX + roomW; rx++) {
-        grid[ry][rx] = FLOOR;
+    for (const side of sides) {
+      // Perpendicular offset — one of three edge-alignment modes:
+      //   centre    (perp = 0):              room centres share the same axis line
+      //   near-edge (perp = newP - parentP): nearest edges align, sharing a wall line
+      //   far-edge  (perp = parentP - newP): furthest edges align, sharing a wall line
+      const parentPerp = (side === 'right' || side === 'left') ? parent.hh : parent.hw;
+      const newPerp    = (side === 'right' || side === 'left') ? newHH     : newHW;
+      const alignRoll  = randFloat();
+      let perp: number;
+      if (alignRoll < 0.34) {
+        perp = 0;
+      } else if (alignRoll < 0.67) {
+        perp =  newPerp - parentPerp;
+      } else {
+        perp = parentPerp - newPerp;
       }
-    }
+      if (randFloat() < 0.2) { perp += randFloat() < 0.5 ? -1 : 1; } // ±1 tile jitter
 
-    rooms.push(candidate);
+      // Clamp perp so the new room doesn't extend past the cluster's current boundary.
+      if (rooms.length >= 3) {
+        if (side === 'right' || side === 'left') {
+          const cyMin = clMinY + newHH;
+          const cyMax = clMaxY - newHH;
+          if (cyMax >= cyMin) {
+            perp = Math.max(cyMin - parent.cy, Math.min(cyMax - parent.cy, perp));
+          }
+        } else {
+          const cxMin = clMinX + newHW;
+          const cxMax = clMaxX - newHW;
+          if (cxMax >= cxMin) {
+            perp = Math.max(cxMin - parent.cx, Math.min(cxMax - parent.cx, perp));
+          }
+        }
+      }
+
+      // Position the new room flush against the chosen side, ATTACH_GAP tiles away.
+      let cx: number, cy: number;
+      if      (side === 'right')  { cx = parent.cx + parent.hw + ATTACH_GAP + newHW; cy = parent.cy + perp; }
+      else if (side === 'left')   { cx = parent.cx - parent.hw - ATTACH_GAP - newHW; cy = parent.cy + perp; }
+      else if (side === 'bottom') { cy = parent.cy + parent.hh + ATTACH_GAP + newHH; cx = parent.cx + perp; }
+      else                        { cy = parent.cy - parent.hh - ATTACH_GAP - newHH; cx = parent.cx + perp; }
+
+      const candidate: Room = { cx, cy, radius: newR, hw: newHW, hh: newHH, shape: newShape, arm: newArm };
+
+      // Reject if the full AABB (including arm) breaches the border or overlaps another room.
+      const bb = getRoomBounds(candidate);
+      if (bb.minX < BORDER || bb.maxX > width  - 1 - BORDER ||
+          bb.minY < BORDER || bb.maxY > height - 1 - BORDER) { continue; }
+      if (rooms.some(r => roomsOverlap(r, candidate))) { continue; }
+
+      carveRoom(grid, candidate);
+      rooms.push(candidate);
+      clMinX = Math.min(clMinX, bb.minX);
+      clMaxX = Math.max(clMaxX, bb.maxX);
+      clMinY = Math.min(clMinY, bb.minY);
+      clMaxY = Math.max(clMaxY, bb.maxY);
+      break;
+    }
   }
 
-  return [rooms, s];
+  return rooms;
 }
 
-// Returns true if two rects overlap when expanded by `buffer` cells on all sides.
-function roomsOverlap(a: Rect, b: Rect, buffer: number): boolean {
-  return (
-    a.x - buffer <= b.x + b.w &&
-    a.x + a.w + buffer >= b.x &&
-    a.y - buffer <= b.y + b.h &&
-    a.y + a.h + buffer >= b.y
-  );
+/**
+ * Randomly picks a shape and computes the matching half-extents and optional arm.
+ * Shape distribution: 25% square, 25% rect, 20% rounded, 30% L-shape.
+ */
+function buildRoomShape(radius: number): Pick<Room, 'hw' | 'hh' | 'shape' | 'arm'> {
+  const roll = randFloat();
+
+  if (roll < 0.25) {
+    // Square — equal half-extents on both axes
+    return { hw: radius, hh: radius, shape: 'square' };
+
+  } else if (roll < 0.50) {
+    // Rectangle — one axis stretched by 1–3 extra tiles
+    const extra = 1 + Math.floor(randFloat() * 3);
+    const wideX = randFloat() < 0.5;
+    return {
+      hw: wideX ? radius + extra : radius,
+      hh: wideX ? radius        : radius + extra,
+      shape: 'rect',
+    };
+
+  } else if (roll < 0.70) {
+    // Rounded square — full rectangle with ~25% corner tiles chamfered off
+    return { hw: radius, hh: radius, shape: 'rounded' };
+
+  } else {
+    // L-shape — main square plus a half-sized arm on a random side
+    const armR  = Math.max(MIN_ROOM_RADIUS - 2, Math.floor(radius * 0.5));
+    const sides: Array<'top' | 'bottom' | 'left' | 'right'> = ['top', 'bottom', 'left', 'right'];
+    const side  = sides[Math.floor(randFloat() * 4)];
+    let dx = 0, dy = 0;
+    if (side === 'right')  { dx =  radius + armR; }
+    if (side === 'left')   { dx = -radius - armR; }
+    if (side === 'bottom') { dy =  radius + armR; }
+    if (side === 'top')    { dy = -radius - armR; }
+    const arm: RoomArm = { dx, dy, hw: armR, hh: armR };
+    return { hw: radius, hh: radius, shape: 'lshape', arm };
+  }
 }
 
-// Returns the center coordinate of a room.
-function roomCenter(r: Rect): Coord {
-  return {
-    x: Math.floor(r.x + r.w / 2),
-    y: Math.floor(r.y + r.h / 2),
+/**
+ * Carves a room's shape into the grid.
+ * All tile writes are clamped to valid grid indices so arm tiles that stray
+ * near the border never cause an out-of-bounds write.
+ */
+function carveRoom(grid: number[][], room: Room): void {
+  const { cx, cy, hw, hh, shape, arm } = room;
+
+  const rows = grid.length;
+  const cols = grid[0].length;
+
+  const carveRect = (x0: number, y0: number, x1: number, y1: number): void => {
+    for (let ty = Math.max(0, y0); ty <= Math.min(rows - 1, y1); ty++) {
+      for (let tx = Math.max(0, x0); tx <= Math.min(cols - 1, x1); tx++) {
+        grid[ty][tx] = FLOOR;
+      }
+    }
   };
+
+  switch (shape) {
+
+    case 'square':
+    case 'rect':
+      carveRect(cx - hw, cy - hh, cx + hw, cy + hh);
+      break;
+
+    case 'rounded': {
+      // Full rectangle with the outermost ~25% corner tiles cut away.
+      const cut = Math.max(1, Math.floor(Math.min(hw, hh) * 0.25));
+      for (let ty = Math.max(0, cy - hh); ty <= Math.min(rows - 1, cy + hh); ty++) {
+        for (let tx = Math.max(0, cx - hw); tx <= Math.min(cols - 1, cx + hw); tx++) {
+          const ax = Math.abs(tx - cx), ay = Math.abs(ty - cy);
+          if (ax > hw - cut && ay > hh - cut) { continue; }
+          grid[ty][tx] = FLOOR;
+        }
+      }
+      break;
+    }
+
+    case 'lshape':
+      // Main rectangle plus the arm rectangle.
+      carveRect(cx - hw, cy - hh, cx + hw, cy + hh);
+      if (arm) {
+        const ax = cx + arm.dx, ay = cy + arm.dy;
+        carveRect(ax - arm.hw, ay - arm.hh, ax + arm.hw, ay + arm.hh);
+      }
+      break;
+  }
 }
 
-function squaredDist(a: Coord, b: Coord): number {
-  return (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+/** Returns the bounding box of a room, expanded to include any L-shape arm. */
+function getRoomBounds(r: Room): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = r.cx - r.hw, maxX = r.cx + r.hw;
+  let minY = r.cy - r.hh, maxY = r.cy + r.hh;
+  if (r.arm) {
+    const ax = r.cx + r.arm.dx, ay = r.cy + r.arm.dy;
+    minX = Math.min(minX, ax - r.arm.hw); maxX = Math.max(maxX, ax + r.arm.hw);
+    minY = Math.min(minY, ay - r.arm.hh); maxY = Math.max(maxY, ay + r.arm.hh);
+  }
+  return { minX, maxX, minY, maxY };
 }
 
-// Deterministic Fisher-Yates shuffle using pseudoRandom chaining.
-// Returns the shuffled array (mutates in place) and the final seed.
-function deterministicShuffle<T>(arr: T[], seed: number): [T[], number] {
-  let s = seed;
+/** Returns true if the two rooms' full AABBs (Axis-Aligned Bounding Boxes) overlap when each is expanded by the buffer gap. */
+function roomsOverlap(a: Room, b: Room): boolean {
+  const gap = 2;
+  const ab = getRoomBounds(a), bb = getRoomBounds(b);
+  return ab.minX - gap <= bb.maxX && ab.maxX + gap >= bb.minX &&
+         ab.minY - gap <= bb.maxY && ab.maxY + gap >= bb.minY;
+}
+
+/** Fisher-Yates shuffle using the module-level RNG. Mutates the array in place. */
+function shuffle<T>(arr: T[]): void {
   for (let i = arr.length - 1; i > 0; i--) {
-    let val: number;
-    [val] = pseudoRandom(s); s = val;
-    const j = Math.floor((val / 0xFFFFFFFF) * (i + 1));
+    const j = Math.floor(randFloat() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  return [arr, s];
 }
 
-// Connects all rooms via sequential nearest-neighbor spanning tree.
-// For each unconnected room, finds the closest already-connected room and
-// carves an L-shaped hallway between their centers.
-function connectRooms(grid: number[][], rooms: Rect[], seed: number, width: number, height: number): number {
-  if (rooms.length < 2) { return seed; }
+// ---------------------------------------------------------------------------
+// Corridor placement TODO: This is not working very well 
+// ---------------------------------------------------------------------------
 
-  let s = seed;
-  const shuffled = [...rooms];
-  [, s] = deterministicShuffle(shuffled, s);
+/**
+ * Connects rooms with straight 3-tile-wide corridors.
+ * Each room exits from the centre of its wall face nearest to the target room.
+ * A 25% chance causes a second connection to the next-nearest room, producing
+ * T-junctions where corridors share a wall tile.
+ */
+function placeCorridors(grid: number[][], rooms: Room[], width: number, height: number): Corridor[] {
+  const corridors: Corridor[] = [];
 
-  const connected = new Set<number>([0]);
+  for (let i = 0; i < rooms.length; i++) {
+    const room = rooms[i];
 
-  for (let i = 1; i < shuffled.length; i++) {
-    const centerA = roomCenter(shuffled[i]);
+    // Sort all other rooms by centre distance.
+    const others = rooms
+      .map((r, idx) => ({ r, idx, d: (r.cx - room.cx) ** 2 + (r.cy - room.cy) ** 2 }))
+      .filter(e => e.idx !== i)
+      .sort((a, b) => a.d - b.d);
 
-    // Find the nearest room already in the connected set
-    let bestDist = Infinity;
-    let bestIdx = 0;
-    for (const j of connected) {
-      const d = squaredDist(centerA, roomCenter(shuffled[j]));
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = j;
-      }
-    }
+    if (others.length === 0) { continue; }
 
-    const centerB = roomCenter(shuffled[bestIdx]);
-    s = carveHallway(grid, centerA, centerB, s, width, height);
-    connected.add(i);
-  }
+    const targets = [others[0]];
+    if (others.length > 1 && randFloat() < 0.25) { targets.push(others[1]); }
 
-  return s;
-}
-
-// Carves an L-shaped hallway between two points.
-// Orientation (horizontal-first vs vertical-first) is chosen randomly.
-// A ±1 jog at the corner is applied with DEVIATION_CHANCE probability.
-function carveHallway(grid: number[][], a: Coord, b: Coord, seed: number, width: number, height: number): number {
-  let s = seed;
-  let val: number;
-
-  [val] = pseudoRandom(s); s = val;
-  const horizontalFirst = (val / 0xFFFFFFFF) < 0.5;
-
-  [val] = pseudoRandom(s); s = val;
-  const deviate = (val / 0xFFFFFFFF) < DEVIATION_CHANCE;
-
-  let cornerX = horizontalFirst ? b.x : a.x;
-  let cornerY = horizontalFirst ? a.y : b.y;
-
-  // Optional ±1 deviation at the bend point
-  if (deviate) {
-    [val] = pseudoRandom(s); s = val;
-    const shift = (val / 0xFFFFFFFF) < 0.5 ? -1 : 1;
-    if (horizontalFirst) {
-      cornerY = Math.max(1, Math.min(height - 2, cornerY + shift));
-    } else {
-      cornerX = Math.max(1, Math.min(width - 2, cornerX + shift));
+    for (const { r: target } of targets) {
+      const corridor = carveRoomCorridor(grid, room, target, width, height);
+      if (corridor) { corridors.push(corridor); }
     }
   }
 
-  if (horizontalFirst) {
-    // Horizontal segment: a → corner, then vertical: corner → b
-    carveSegment(grid, a.x, a.y, cornerX, cornerY, width, height);
-    carveSegment(grid, cornerX, cornerY, b.x, b.y, width, height);
+  return corridors;
+}
+
+/**
+ * Carves a single straight 3-tile-wide corridor from `from` to `to`.
+ * Exits from the centre of whichever wall face of `from` points most directly
+ * at `to`, and enters `to` through its opposing face. The corridor is L-shaped
+ * when the two exit points are not axis-aligned: horizontal segment first, then
+ * vertical.
+ */
+function carveRoomCorridor(grid: number[][], from: Room, to: Room, width: number, height: number): Corridor | null {
+  const dx = to.cx - from.cx;
+  const dy = to.cy - from.cy;
+
+  // Exit point: centre of the wall face of `from` that faces `to`.
+  let x1: number, y1: number;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    x1 = dx > 0 ? from.cx + from.hw : from.cx - from.hw;
+    y1 = from.cy;
   } else {
-    // Vertical segment: a → corner, then horizontal: corner → b
-    carveSegment(grid, a.x, a.y, cornerX, cornerY, width, height);
-    carveSegment(grid, cornerX, cornerY, b.x, b.y, width, height);
+    x1 = from.cx;
+    y1 = dy > 0 ? from.cy + from.hh : from.cy - from.hh;
   }
 
-  return s;
-}
-
-// Carves a single axis-aligned segment from (x1,y1) to (x2,y2).
-// One axis must be equal (pure horizontal or pure vertical).
-function carveSegment(grid: number[][], x1: number, y1: number, x2: number, y2: number, width: number, height: number): void {
-  if (y1 === y2) {
-    // Horizontal segment
-    for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
-      if (x >= 1 && x < width - 1 && y1 >= 1 && y1 < height - 1) {
-        grid[y1][x] = FLOOR;
-      }
-    }
+  // Entry point: centre of the opposing face of `to`.
+  let x2: number, y2: number;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    x2 = dx > 0 ? to.cx - to.hw : to.cx + to.hw;
+    y2 = to.cy;
   } else {
-    // Vertical segment
-    for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
-      if (x1 >= 1 && x1 < width - 1 && y >= 1 && y < height - 1) {
-        grid[y][x1] = FLOOR;
-      }
-    }
+    x2 = to.cx;
+    y2 = dy > 0 ? to.cy - to.hh : to.cy + to.hh;
   }
+
+  // Clamp endpoints to grid interior.
+  x1 = Math.max(1, Math.min(width  - 2, x1));
+  y1 = Math.max(1, Math.min(height - 2, y1));
+  x2 = Math.max(1, Math.min(width  - 2, x2));
+  y2 = Math.max(1, Math.min(height - 2, y2));
+
+  // Horizontal leg then vertical leg (L-shape or straight).
+  carveHorizontalCorridor(grid, y1, Math.min(x1, x2), Math.max(x1, x2));
+  carveVerticalCorridor(grid, x2, Math.min(y1, y2), Math.max(y1, y2));
+
+  return { from: { x: x1, y: y1 }, to: { x: x2, y: y2 }, width: 3 };
 }
 
-// --- Entrance / Exit (mirrored from CaveGenerator) ---
+// ---------------------------------------------------------------------------
+// Entrance / Exit placement
+// ---------------------------------------------------------------------------
 
-function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right'): number {
-  switch (edge) {
-    case 'top':    return cx < GRID_WIDTH / 2  ? 0 : 1;
-    case 'bottom': return cx < GRID_WIDTH / 2  ? 2 : 3;
-    case 'left':   return cy < GRID_HEIGHT / 2 ? 0 : 2;
-    case 'right':  return cy < GRID_HEIGHT / 2 ? 1 : 3;
-  }
-}
-
-function findBestOpeningPerQuadrant(grid: number[][]): (BorderOpening | null)[] {
-  const best: (BorderOpening | null)[] = [null, null, null, null];
-
-  function consider(o: BorderOpening): void {
-    const q = o.quadrant;
-    if (best[q] === null || o.distToFloor < best[q]!.distToFloor) {
-      best[q] = o;
-    }
-  }
-
-  // Top edge — scan downward
-  for (let cx = 1; cx < GRID_WIDTH - 1; cx++) {
-    for (let depth = 1; depth < GRID_HEIGHT; depth++) {
-      if (grid[depth][cx] === FLOOR) {
-        consider({ cx, cy: 0, edge: 'top', quadrant: borderQuadrant(cx, 0, 'top'), distToFloor: depth, floorTarget: { x: cx, y: depth } });
-        break;
-      }
-    }
-  }
-
-  // Bottom edge — scan upward
-  for (let cx = 1; cx < GRID_WIDTH - 1; cx++) {
-    for (let depth = GRID_HEIGHT - 2; depth >= 0; depth--) {
-      if (grid[depth][cx] === FLOOR) {
-        consider({ cx, cy: GRID_HEIGHT - 1, edge: 'bottom', quadrant: borderQuadrant(cx, GRID_HEIGHT - 1, 'bottom'), distToFloor: GRID_HEIGHT - 1 - depth, floorTarget: { x: cx, y: depth } });
-        break;
-      }
-    }
-  }
-
-  // Left edge — scan rightward
-  for (let cy = 1; cy < GRID_HEIGHT - 1; cy++) {
-    for (let depth = 1; depth < GRID_WIDTH; depth++) {
-      if (grid[cy][depth] === FLOOR) {
-        consider({ cx: 0, cy, edge: 'left', quadrant: borderQuadrant(0, cy, 'left'), distToFloor: depth, floorTarget: { x: depth, y: cy } });
-        break;
-      }
-    }
-  }
-
-  // Right edge — scan leftward
-  for (let cy = 1; cy < GRID_HEIGHT - 1; cy++) {
-    for (let depth = GRID_WIDTH - 2; depth >= 0; depth--) {
-      if (grid[cy][depth] === FLOOR) {
-        consider({ cx: GRID_WIDTH - 1, cy, edge: 'right', quadrant: borderQuadrant(GRID_WIDTH - 1, cy, 'right'), distToFloor: GRID_WIDTH - 1 - depth, floorTarget: { x: depth, y: cy } });
-        break;
-      }
-    }
-  }
-
-  return best;
-}
-
-function openingDistance(a: BorderOpening, b: BorderOpening): number {
-  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
-}
-
-function placeEntranceAndExit(grid: number[][], preferDiagonal: boolean): void {
-  const best = findBestOpeningPerQuadrant(grid);
-  const minDist = GRID_WIDTH / 4;
+/**
+ * Places a 3×1 entrance and a 3×1 exit on the map border in different quadrants
+ * (preferring opposite quadrants when preferDiagonal is set), each connected to
+ * the nearest room centre via a 3-tile-wide straight corridor.
+ */
+function placeEntranceAndExit(grid: number[][], rooms: Room[], preferDiagonal: boolean, width: number, height: number): void {
+  const best = findBestOpeningPerQuadrant(rooms, width, height);
+  const minDist = width / 4;
 
   let entranceOpening: BorderOpening | null = null;
   let exitOpening: BorderOpening | null = null;
@@ -354,49 +460,93 @@ function placeEntranceAndExit(grid: number[][], preferDiagonal: boolean): void {
     }
   }
 
-  if (entranceOpening === null || exitOpening === null) {
-    return;
-  }
+  if (entranceOpening === null || exitOpening === null) { return; }
 
-  stampOpening(grid, entranceOpening, ENTRANCE);
-  stampOpening(grid, exitOpening, EXIT);
+  stampOpening(grid, entranceOpening, ENTRANCE, width, height);
+  stampOpening(grid, exitOpening, EXIT, width, height);
 }
 
-function stampOpening(grid: number[][], opening: BorderOpening, value: number): void {
+/**
+ * For each border quadrant, finds the room whose centre is closest to that edge.
+ * The floorTarget is the room centre so stampOpening tunnels to the middle of the room.
+ */
+function findBestOpeningPerQuadrant(rooms: Room[], width: number, height: number): (BorderOpening | null)[] {
+  const best: (BorderOpening | null)[] = [null, null, null, null];
+
+  function consider(o: BorderOpening): void {
+    const q = o.quadrant;
+    if (best[q] === null || o.distToFloor < best[q]!.distToFloor) { best[q] = o; }
+  }
+
+  for (const { cx, cy } of rooms) {
+    consider({ cx, cy: 0,          edge: 'top',    quadrant: borderQuadrant(cx, 0,          'top',    width, height), distToFloor: cy,              floorTarget: { x: cx, y: cy } });
+    consider({ cx, cy: height - 1, edge: 'bottom', quadrant: borderQuadrant(cx, height - 1, 'bottom', width, height), distToFloor: height - 1 - cy, floorTarget: { x: cx, y: cy } });
+    consider({ cx: 0,         cy,  edge: 'left',   quadrant: borderQuadrant(0,         cy,  'left',   width, height), distToFloor: cx,              floorTarget: { x: cx, y: cy } });
+    consider({ cx: width - 1, cy,  edge: 'right',  quadrant: borderQuadrant(width - 1, cy,  'right',  width, height), distToFloor: width - 1 - cx,  floorTarget: { x: cx, y: cy } });
+  }
+
+  return best;
+}
+
+/** Carves a 3-tile-wide corridor from just inside the border to floorTarget, then stamps the 3 border cells with value. */
+function stampOpening(grid: number[][], opening: BorderOpening, value: number, width: number, height: number): void {
   const { cx, cy, edge, floorTarget } = opening;
 
   switch (edge) {
     case 'top':
-      for (let y = 1; y <= floorTarget.y; y++) { grid[y][cx] = FLOOR; }
-      grid[1][cx - 1] = FLOOR;
-      grid[1][cx + 1] = FLOOR;
+      carveVerticalCorridor(grid, cx, 1, floorTarget.y);
       grid[0][cx - 1] = value;
       grid[0][cx]     = value;
       grid[0][cx + 1] = value;
       break;
     case 'bottom':
-      for (let y = floorTarget.y; y < GRID_HEIGHT - 1; y++) { grid[y][cx] = FLOOR; }
-      grid[GRID_HEIGHT - 2][cx - 1] = FLOOR;
-      grid[GRID_HEIGHT - 2][cx + 1] = FLOOR;
-      grid[GRID_HEIGHT - 1][cx - 1] = value;
-      grid[GRID_HEIGHT - 1][cx]     = value;
-      grid[GRID_HEIGHT - 1][cx + 1] = value;
+      carveVerticalCorridor(grid, cx, floorTarget.y, height - 2);
+      grid[height - 1][cx - 1] = value;
+      grid[height - 1][cx]     = value;
+      grid[height - 1][cx + 1] = value;
       break;
     case 'left':
-      for (let x = 1; x <= floorTarget.x; x++) { grid[cy][x] = FLOOR; }
-      grid[cy - 1][1] = FLOOR;
-      grid[cy + 1][1] = FLOOR;
+      carveHorizontalCorridor(grid, cy, 1, floorTarget.x);
       grid[cy - 1][0] = value;
       grid[cy][0]     = value;
       grid[cy + 1][0] = value;
       break;
     case 'right':
-      for (let x = floorTarget.x; x < GRID_WIDTH - 1; x++) { grid[cy][x] = FLOOR; }
-      grid[cy - 1][GRID_WIDTH - 2] = FLOOR;
-      grid[cy + 1][GRID_WIDTH - 2] = FLOOR;
-      grid[cy - 1][GRID_WIDTH - 1] = value;
-      grid[cy][GRID_WIDTH - 1]     = value;
-      grid[cy + 1][GRID_WIDTH - 1] = value;
+      carveHorizontalCorridor(grid, cy, floorTarget.x, width - 2);
+      grid[cy - 1][width - 1] = value;
+      grid[cy][width - 1]     = value;
+      grid[cy + 1][width - 1] = value;
       break;
+  }
+}
+
+/** Carves a 3-tile-wide vertical corridor strip from y=yStart to y=yEnd at column cx. */
+function carveVerticalCorridor(grid: number[][], cx: number, yStart: number, yEnd: number): void {
+  for (let y = yStart; y <= yEnd; y++) {
+    grid[y][cx - 1] = FLOOR;
+    grid[y][cx]     = FLOOR;
+    grid[y][cx + 1] = FLOOR;
+  }
+}
+
+/** Carves a 3-tile-wide horizontal corridor strip from x=xStart to x=xEnd at row cy. */
+function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, xEnd: number): void {
+  for (let x = xStart; x <= xEnd; x++) {
+    grid[cy - 1][x] = FLOOR;
+    grid[cy][x]     = FLOOR;
+    grid[cy + 1][x] = FLOOR;
+  }
+}
+
+function openingDistance(a: BorderOpening, b: BorderOpening): number {
+  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
+}
+
+function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right', width: number, height: number): number {
+  switch (edge) {
+    case 'top':    return cx < width / 2  ? 0 : 1;
+    case 'bottom': return cx < width / 2  ? 2 : 3;
+    case 'left':   return cy < height / 2 ? 0 : 2;
+    case 'right':  return cy < height / 2 ? 1 : 3;
   }
 }

@@ -1,15 +1,17 @@
-// Returns a deterministic pseudo-random unsigned 32-bit integer for a given seed.
-// Same seed always produces the same output. If seed is null, a random seed
-// between 0 and 100,000,000 is generated.
-//
-// Implemented using xxHash32 — a non-cryptographic hash that provides excellent
-// "avalanche": flipping any single input bit flips ~50% of output bits, giving
-// a uniform distribution across the output range. Only uses multiply, XOR, and
-// bit-rotation.
-//
-// The five Px constants are odd primes with no obvious bit patterns; they
-// interact with 32-bit overflow to scatter bits chaotically. P1 is unused here
-// because it only appears in the main stripe loop for inputs >= 16 bytes.
+/**
+ * Returns a deterministic pseudo-random unsigned 32-bit integer for a given seed.
+ * Same seed always produces the same output. If seed is null, a random seed
+ * between 0 and 100,000,000 is generated.
+ *
+ * Implemented using xxHash32 — a non-cryptographic hash that provides excellent
+ * "avalanche": flipping any single input bit flips ~50% of output bits, giving
+ * a uniform distribution across the output range. Only uses multiply, XOR, and
+ * bit-rotation.
+ *
+ * The five Px constants are odd primes with no obvious bit patterns; they
+ * interact with 32-bit overflow to scatter bits chaotically. P1 is unused here
+ * because it only appears in the main stripe loop for inputs >= 16 bytes.
+ */
 export function pseudoRandom(seed: number | null): [number, number] {
   if (seed === null) seed = Math.floor(Math.random() * 100000000);
 
@@ -49,8 +51,8 @@ export function pseudoRandom(seed: number | null): [number, number] {
   return [h >>> 0, seed];
 }
 
-// Rotates x left by r bits within a 32-bit integer.
-// Unlike a shift, rotation loses no bits — they wrap around to the right side.
+/** Rotates x left by r bits within a 32-bit integer.
+ *  Unlike a shift, rotation loses no bits — they wrap around to the right side. */
 function rotl32(x: number, r: number): number {
   return ((x << r) | (x >>> (32 - r))) >>> 0;
 }

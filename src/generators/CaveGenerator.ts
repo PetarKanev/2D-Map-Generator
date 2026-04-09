@@ -4,32 +4,59 @@ import { applySmoothMap, removeRogueTiles } from '../utils/SmoothMap';
 let GRID_WIDTH = 100;
 let GRID_HEIGHT = 100;
 
-// Probability that any interior cell starts as a wall.
-const RANDOM_FILL_PERCENT = 0.50;
-
-const SMOOTH_ITERATIONS = 5;
-
-// Wall/room regions smaller than these thresholds are cleaned up during ProcessMap.
-const WALL_THRESHOLD = 50;
-const ROOM_THRESHOLD = 50;
-
-// Radius of the circular brush used to carve corridors between rooms.
-const PASSAGE_RADIUS = 5;
-
 const FLOOR = 0;
 const WALL = 1;
 const ENTRANCE = 2;
 const EXIT = 3;
+
+// Cave generation parameters
+const RANDOM_FILL_PERCENT = 0.50;  // probability any interior cell starts as a wall
+const SMOOTH_ITERATIONS = 5;       // cellular automata passes
+const WALL_THRESHOLD = 50;         // wall blobs smaller than this become floor
+const ROOM_THRESHOLD = 50;         // floor regions smaller than this become wall
+const PASSAGE_RADIUS = 5;          // radius of the circular brush used to carve corridors
+
+// ---------------------------------------------------------------------------
+// Module-level RNG state — initialized once per generateCaveGrid call.
+// Safe in a Web Worker (single-threaded, synchronous generation).
+// ---------------------------------------------------------------------------
+let _rngSeed = 0;
+
+/** Advance the RNG and return the raw 32-bit hash value. */
+function rand(): number {
+  const [val] = pseudoRandom(_rngSeed);
+  _rngSeed = val;
+  return val;
+}
+
+/** Uniform float in [0, 1). */
+function randFloat(): number {
+  return rand() / 0xFFFFFFFF;
+}
+
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
 
 interface Coord {
   x: number;
   y: number;
 }
 
+/** A cave room defined by its floor tiles and the subset that border a wall. */
 interface Room {
   tiles: Coord[];
   edgeTiles: Coord[];
   roomSize: number;
+}
+
+interface BorderOpening {
+  cx: number;       // center x of the 3-cell stamp
+  cy: number;       // center y of the 3-cell stamp
+  edge: 'top' | 'bottom' | 'left' | 'right';
+  quadrant: number; // 0=TL, 1=TR, 2=BL, 3=BR
+  distToFloor: number;
+  floorTarget: Coord;
 }
 
 export interface CaveMetadata {
@@ -40,51 +67,28 @@ export interface CaveMetadata {
   preferDiagonal?: boolean;
 }
 
-// Factory — builds a Room and computes its unique edge tiles.
-// Edge tiles are floor tiles with at least one cardinal wall neighbour.
-// Duplicates are excluded: connectAllRooms finds the minimum-distance pair
-// exhaustively, so duplicate entries never change the result and only slow
-// down the MST's inner loop.
-function createRoom(tiles: Coord[], grid: number[][]): Room {
-  const seen = new Set<string>();
-  const edgeTiles: Coord[] = [];
-  for (const tile of tiles) {
-    for (let nx = tile.x - 1; nx <= tile.x + 1; nx++) {
-      for (let ny = tile.y - 1; ny <= tile.y + 1; ny++) {
-        if (nx === tile.x || ny === tile.y) {
-          if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
-            if (grid[ny][nx] === WALL) {
-              const key = `${tile.x},${tile.y}`;
-              if (!seen.has(key)) {
-                seen.add(key);
-                edgeTiles.push(tile);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return { tiles, edgeTiles, roomSize: tiles.length };
-}
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
-// Entry point. Returns the grid and generation metadata.
 export function generateCaveGrid(seed: number, width: number, height: number, preferDiagonal: boolean): { grid: number[][], metadata: CaveMetadata } {
   const startTime = performance.now();
 
   GRID_WIDTH = width;
   GRID_HEIGHT = height;
 
+  _rngSeed = seed; // seed the module-level RNG once
+
   const grid: number[][] = Array.from({ length: GRID_HEIGHT }, () =>
     new Array(GRID_WIDTH).fill(WALL)
   );
 
-  randomFillMap(grid, seed);
+  randomFillMap(grid);
   applySmoothMap(grid, SMOOTH_ITERATIONS);
 
   const roomCount = processMap(grid);
 
-  // Re-enforce border walls after all processing.
+  // Re-enforce border walls after all processing
   for (let x = 0; x < GRID_WIDTH; x++) {
     grid[0][x] = WALL;
     grid[GRID_HEIGHT - 1][x] = WALL;
@@ -96,6 +100,7 @@ export function generateCaveGrid(seed: number, width: number, height: number, pr
 
   placeEntranceAndExit(grid, preferDiagonal);
 
+  // Max 100 iterations of rogue tile removal to clean up any remaining 1-tile holes or protrusions.
   const rogueIterations = removeRogueTiles(grid, 100);
 
   const floorCells = grid.flat().filter(v => v === FLOOR || v === ENTRANCE || v === EXIT).length;
@@ -105,31 +110,17 @@ export function generateCaveGrid(seed: number, width: number, height: number, pr
   return { grid, metadata: { roomCount, floorPercent, generationTimeMs, rogueIterations, preferDiagonal } };
 }
 
-// Fills the grid with a deterministic random noise based on the seed.
-// Border cells are always walls. Interior cells are walls with probability
-// RANDOM_FILL_PERCENT; pseudoRandom is chained across every cell so the
-// same seed always produces the same map.
-function randomFillMap(grid: number[][], seed: number): void {
-  let currentSeed = seed;
+// ---------------------------------------------------------------------------
+// Map generation
+// ---------------------------------------------------------------------------
 
-  for (let y = 0; y < GRID_HEIGHT; y++) {
-    for (let x = 0; x < GRID_WIDTH; x++) {
-      if (x === 0 || x === GRID_WIDTH - 1 || y === 0 || y === GRID_HEIGHT - 1) {
-        grid[y][x] = WALL;
-      } else {
-        const [val] = pseudoRandom(currentSeed);
-        currentSeed = val;
-        grid[y][x] = (val / 0xFFFFFFFF) < RANDOM_FILL_PERCENT ? WALL : FLOOR;
-      }
-    }
-  }
-}
-
-// Cleans up the map and connects all rooms:
-//   1. Remove small wall blobs (< WALL_THRESHOLD tiles) — converts them to floor.
-//   2. Remove small floor regions (< ROOM_THRESHOLD tiles) — converts them to wall.
-//   3. Connect all surviving rooms via Prim's MST so the map is fully traversable.
-// Returns the number of surviving rooms.
+/**
+ * Cleans up the map and connects all rooms:
+ *   1. Remove small wall blobs (< WALL_THRESHOLD) — converts them to floor.
+ *   2. Remove small floor regions (< ROOM_THRESHOLD) — converts them to wall.
+ *   3. Connect all surviving rooms via Prim's MST so the map is fully traversable.
+ * Returns the number of surviving rooms.
+ */
 function processMap(grid: number[][]): number {
   const wallRegions = getRegions(grid, WALL);
   for (const region of wallRegions) {
@@ -161,7 +152,28 @@ function processMap(grid: number[][]): number {
   return survivingRooms.length;
 }
 
-// Finds all contiguous regions of tileType using a 4-directional BFS.
+/**
+ * Fills the grid with deterministic random noise.
+ * Border cells are always walls. Interior cells are walls with probability
+ * RANDOM_FILL_PERCENT; the same seed always produces the same map.
+ */
+function randomFillMap(grid: number[][]): void {
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      if (x === 0 || x === GRID_WIDTH - 1 || y === 0 || y === GRID_HEIGHT - 1) {
+        grid[y][x] = WALL;
+      } else {
+        grid[y][x] = randFloat() < RANDOM_FILL_PERCENT ? WALL : FLOOR;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Region processing
+// ---------------------------------------------------------------------------
+
+/** Finds all contiguous regions of tileType using a 4-directional BFS. */
 function getRegions(grid: number[][], tileType: number): Coord[][] {
   const regions: Coord[][] = [];
   const visited: boolean[][] = Array.from({ length: GRID_HEIGHT }, () =>
@@ -180,8 +192,39 @@ function getRegions(grid: number[][], tileType: number): Coord[][] {
   return regions;
 }
 
-// BFS flood-fill from (startX, startY), returning all connected tiles of tileType.
-// Uses the shared visited array to avoid re-visiting cells across multiple calls.
+/**
+ * Builds a Room from a set of floor tiles and computes its edge tiles.
+ * Edge tiles are floor tiles with at least one cardinal wall neighbour.
+ * Duplicates are excluded: connectAllRooms finds the minimum-distance pair
+ * exhaustively, so duplicates never change the result and only slow the MST.
+ */
+function createRoom(tiles: Coord[], grid: number[][]): Room {
+  const seen = new Set<string>();
+  const edgeTiles: Coord[] = [];
+  for (const tile of tiles) {
+    for (let nx = tile.x - 1; nx <= tile.x + 1; nx++) {
+      for (let ny = tile.y - 1; ny <= tile.y + 1; ny++) {
+        if (nx === tile.x || ny === tile.y) {
+          if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+            if (grid[ny][nx] === WALL) {
+              const key = `${tile.x},${tile.y}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                edgeTiles.push(tile);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return { tiles, edgeTiles, roomSize: tiles.length };
+}
+
+/**
+ * BFS flood-fill from (startX, startY), returning all connected tiles of tileType.
+ * Uses the shared visited array to avoid re-visiting cells across multiple calls.
+ */
 function getRegionTiles(
   grid: number[][],
   startX: number,
@@ -216,8 +259,14 @@ function getRegionTiles(
   return tiles;
 }
 
-// Connects all rooms using Prim's MST over closest edge-tile pairs.
-// Guarantees every room is reachable from every other room with no isolated areas.
+// ---------------------------------------------------------------------------
+// Room connection — Prim's MST
+// ---------------------------------------------------------------------------
+
+/**
+ * Connects all rooms using Prim's MST over closest edge-tile pairs.
+ * Guarantees every room is reachable from every other room.
+ */
 function connectAllRooms(grid: number[][], rooms: Room[]): void {
   if (rooms.length <= 1) {
     return;
@@ -234,9 +283,7 @@ function connectAllRooms(grid: number[][], rooms: Room[]): void {
 
     for (const roomA of inTree) {
       for (const roomB of rooms) {
-        if (inTree.has(roomB)) {
-          continue;
-        }
+        if (inTree.has(roomB)) { continue; }
         for (const tileA of roomA.edgeTiles) {
           for (const tileB of roomB.edgeTiles) {
             const dist = (tileA.x - tileB.x) ** 2 + (tileA.y - tileB.y) ** 2;
@@ -252,16 +299,14 @@ function connectAllRooms(grid: number[][], rooms: Room[]): void {
       }
     }
 
-    if (bestRoomA === null || bestRoomB === null) {
-      break;
-    }
+    if (bestRoomA === null || bestRoomB === null) { break; }
 
     createPassage(grid, bestTileA, bestTileB);
     inTree.add(bestRoomB);
   }
 }
 
-// Carves a corridor between two edge tiles using Bresenham's line + a circular brush.
+/** Carves a corridor between two edge tiles using Bresenham's line + a circular brush. */
 function createPassage(grid: number[][], tileA: Coord, tileB: Coord): void {
   const line = getLine(tileA, tileB);
   for (const coord of line) {
@@ -269,8 +314,7 @@ function createPassage(grid: number[][], tileA: Coord, tileB: Coord): void {
   }
 }
 
-// Bresenham line algorithm
-// Returns every grid coordinate on the straight line from `from` to `to`.
+/** Bresenham line — returns every grid coordinate on the straight line from `from` to `to`. */
 function getLine(from: Coord, to: Coord): Coord[] {
   const line: Coord[] = [];
   let x = from.x;
@@ -294,18 +338,10 @@ function getLine(from: Coord, to: Coord): Coord[] {
   let gradientAccumulation = Math.floor(longest / 2);
   for (let i = 0; i < longest; i++) {
     line.push({ x, y });
-    if (inverted) {
-      y += step;
-    } else {
-      x += step;
-    }
+    if (inverted) { y += step; } else { x += step; }
     gradientAccumulation += shortest;
     if (gradientAccumulation >= longest) {
-      if (inverted) {
-        x += gradientStep;
-      } else {
-        y += gradientStep;
-      }
+      if (inverted) { x += gradientStep; } else { y += gradientStep; }
       gradientAccumulation -= longest;
     }
   }
@@ -313,7 +349,7 @@ function getLine(from: Coord, to: Coord): Coord[] {
   return line;
 }
 
-// Carves a filled circle of floor cells centred at `center` with the given radius.
+/** Carves a filled circle of floor cells centred at `center` with the given radius. */
 function drawCircle(grid: number[][], center: Coord, radius: number): void {
   for (let dx = -radius; dx <= radius; dx++) {
     for (let dy = -radius; dy <= radius; dy++) {
@@ -328,37 +364,60 @@ function drawCircle(grid: number[][], center: Coord, radius: number): void {
   }
 }
 
-// Metadata for a candidate 3-cell border opening.
-interface BorderOpening {
-  cx: number;       // center x of the 3-cell stamp
-  cy: number;       // center y of the 3-cell stamp
-  edge: 'top' | 'bottom' | 'left' | 'right';
-  quadrant: number; // 0=TL, 1=TR, 2=BL, 3=BR
-  distToFloor: number;
-  floorTarget: Coord;
-}
+// ---------------------------------------------------------------------------
+// Entrance / Exit placement
+// ---------------------------------------------------------------------------
 
-// Returns quadrant (0–3) for a border position using the edge to determine
-// which axis determines left/right vs top/bottom.
-function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right'): number {
-  switch (edge) {
-    case 'top':    return cx < GRID_WIDTH / 2  ? 0 : 1;
-    case 'bottom': return cx < GRID_WIDTH / 2  ? 2 : 3;
-    case 'left':   return cy < GRID_HEIGHT / 2 ? 0 : 2;
-    case 'right':  return cy < GRID_HEIGHT / 2 ? 1 : 3;
+/**
+ * Places a 3×1 entrance and a 3×1 exit on the map border in different quadrants
+ * (preferring opposite quadrants when preferDiagonal is set), each connected to
+ * the nearest floor cell via a straight corridor.
+ */
+function placeEntranceAndExit(grid: number[][], preferDiagonal: boolean): void {
+  const best = findBestOpeningPerQuadrant(grid);
+  const minDist = GRID_WIDTH / 4;
+
+  let entranceOpening: BorderOpening | null = null;
+  let exitOpening: BorderOpening | null = null;
+
+  if (preferDiagonal) {
+    for (const [a, b] of [[0, 3], [1, 2]] as [number, number][]) {
+      if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
+        entranceOpening = best[a];
+        exitOpening = best[b];
+        break;
+      }
+    }
   }
+
+  if (entranceOpening === null) {
+    outer: for (let a = 0; a < 4; a++) {
+      for (let b = a + 1; b < 4; b++) {
+        if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
+          entranceOpening = best[a];
+          exitOpening = best[b];
+          break outer;
+        }
+      }
+    }
+  }
+
+  if (entranceOpening === null || exitOpening === null) { return; }
+
+  stampOpening(grid, entranceOpening, ENTRANCE);
+  stampOpening(grid, exitOpening, EXIT);
 }
 
-// Scans inward from every valid 3-cell border position and keeps the closest
-// opening to a floor cell for each of the 4 quadrants.
+/**
+ * Scans inward from every valid 3-cell border position and keeps the closest
+ * opening to a floor cell for each of the 4 quadrants.
+ */
 function findBestOpeningPerQuadrant(grid: number[][]): (BorderOpening | null)[] {
   const best: (BorderOpening | null)[] = [null, null, null, null];
 
   function consider(o: BorderOpening): void {
     const q = o.quadrant;
-    if (best[q] === null || o.distToFloor < best[q]!.distToFloor) {
-      best[q] = o;
-    }
+    if (best[q] === null || o.distToFloor < best[q]!.distToFloor) { best[q] = o; }
   }
 
   // Top edge — scan downward
@@ -404,54 +463,7 @@ function findBestOpeningPerQuadrant(grid: number[][]): (BorderOpening | null)[] 
   return best;
 }
 
-function openingDistance(a: BorderOpening, b: BorderOpening): number {
-  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
-}
-
-// Places a 3×1 entrance and a 3×1 exit on the map border in different quadrants
-// (preferring opposite quadrants), each connected to the nearest floor cell
-// via a straight 1-cell-wide corridor.
-function placeEntranceAndExit(grid: number[][], preferDiagonal: boolean): void {
-  const best = findBestOpeningPerQuadrant(grid);
-  const minDist = GRID_WIDTH / 4;
-
-  let entranceOpening: BorderOpening | null = null;
-  let exitOpening: BorderOpening | null = null;
-
-  // Prefer diagonally opposite quadrant pairs when requested.
-  if (preferDiagonal) {
-    for (const [a, b] of [[0, 3], [1, 2]] as [number, number][]) {
-      if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
-        entranceOpening = best[a];
-        exitOpening = best[b];
-        break;
-      }
-    }
-  }
-
-  // Fallback (or primary when preferDiagonal is false): any two quadrants with valid openings far enough apart.
-  if (entranceOpening === null) {
-    outer: for (let a = 0; a < 4; a++) {
-      for (let b = a + 1; b < 4; b++) {
-        if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
-          entranceOpening = best[a];
-          exitOpening = best[b];
-          break outer;
-        }
-      }
-    }
-  }
-
-  if (entranceOpening === null || exitOpening === null) {
-    return;
-  }
-
-  stampOpening(grid, entranceOpening, ENTRANCE);
-  stampOpening(grid, exitOpening, EXIT);
-}
-
-// Carves a 1-cell corridor from just inside the border to `floorTarget`,
-// then stamps the 3 border cells with `value`.
+/** Carves a 1-cell corridor from just inside the border to `floorTarget`, then stamps the 3 border cells with `value`. */
 function stampOpening(grid: number[][], opening: BorderOpening, value: number): void {
   const { cx, cy, edge, floorTarget } = opening;
 
@@ -488,5 +500,18 @@ function stampOpening(grid: number[][], opening: BorderOpening, value: number): 
       grid[cy][GRID_WIDTH - 1]     = value;
       grid[cy + 1][GRID_WIDTH - 1] = value;
       break;
+  }
+}
+
+function openingDistance(a: BorderOpening, b: BorderOpening): number {
+  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
+}
+
+function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right'): number {
+  switch (edge) {
+    case 'top':    return cx < GRID_WIDTH / 2  ? 0 : 1;
+    case 'bottom': return cx < GRID_WIDTH / 2  ? 2 : 3;
+    case 'left':   return cy < GRID_HEIGHT / 2 ? 0 : 2;
+    case 'right':  return cy < GRID_HEIGHT / 2 ? 1 : 3;
   }
 }

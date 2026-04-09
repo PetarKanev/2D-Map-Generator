@@ -8,16 +8,31 @@ import type { MapMetadata } from './rendering/GenerateMap'
 
 import './App.css'
 
-const mapTypes = [
-  {label:'Cave', value: 'Cave', disabled: false}, 
-  {label:'Dungeon -- WIP', value: 'Dungeon', disabled: true}
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const mapTypes = [ // available generator options shown in the map-type dropdown
+  { label: 'Cave',              value: 'Cave',        disabled: false },
+  { label: 'Dungeon',           value: 'Dungeon',     disabled: false },
+  { label: 'Island -- WIP',     value: 'Island',      disabled: true  }
 ];
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Formats a millisecond duration for display in the metadata panel. */
 function formatTime(ms: number): string {
   return `${ms}ms`;
 }
 
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 function App() {
+  // State
   const [mapID, setMapID] = useState(0)
   const [seed, setSeed] = useState<number | null>(null)
   const [pixiContainer, setPixiContainer] = useState<HTMLDivElement | null>(null)
@@ -25,28 +40,34 @@ function App() {
   const [metadata, setMetadata] = useState<MapMetadata | null>(null)
   const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
   const [isLoading, setIsLoading] = useState(false)
-  
+
+  // Refs 
+  // Track the last-used config so re-generating with identical settings still produces a new map by passing null (random) to pseudoRandom.
   const lastUsedSeed = useRef<number | null>(null)
   const lastUsedPreferDiagonal = useRef<boolean>(true)
 
+  // Handlers
+
+  /** Restricts the seed input to digits only. */
   function handleSeedChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (/^\d*$/.test(e.target.value)) {
       setSeed(e.target.value ? Number(e.target.value) : null);
     }
   }
 
+  /**
+   * Kicks off map generation. Yields to the event loop first so the loading
+   * overlay can render before the heavy generation work begins.
+   */
   async function handleGenerate() {
     const configUnchanged = seed === lastUsedSeed.current && preferDiagonal === lastUsedPreferDiagonal.current;
     const [newMapID, mapSeed] = pseudoRandom(configUnchanged ? null : seed);
-    
+
     setMapID(newMapID);
     setSeed(mapSeed);
     setIsLoading(true);
 
-    // Yield to allow loading overlay to render before 
-    // heavy generation starts, 0ms overhead should not 
-    // affect performance but ensures UI responsiveness.
-    await new Promise(resolve => setTimeout(resolve, 0)); 
+    await new Promise(resolve => setTimeout(resolve, 0));
     setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal));
     setIsLoading(false);
 
@@ -66,16 +87,17 @@ function App() {
           <input type="text" value={seed ?? ''} onChange={handleSeedChange} />
         </div>
         <div>
-        Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
+          Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
         </div>
         <div>
-        Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />
+          Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />
         </div>
         <button onClick={handleGenerate}>Generate</button>
         {metadata && (
-          <div id="metadata"> 
+          <div id="metadata">
             <div id="metadata-title">Metadata</div>
             <div>Rooms: {metadata.roomCount}</div>
+            {'corridors' in metadata && metadata.corridors && <div>Corridors: {metadata.corridors.length}</div>}
             <div>Floor: {metadata.floorPercent}%</div>
             <div>Runtime: {formatTime(metadata.generationTimeMs)}</div>
             {'rogueIterations' in metadata && <div>Smoothing passes: {metadata.rogueIterations}</div>}
