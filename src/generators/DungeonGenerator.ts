@@ -99,7 +99,13 @@ export function generateDungeonGrid(
 
   const rooms = placeRooms(grid, width, height);
 
+  // Snapshot room floor tiles before corridors are carved, so the smoothing
+  // pass can distinguish room edges (preserve) from corridor-only areas (smooth).
+  const roomMask: boolean[][] = grid.map(row => row.map(v => v === FLOOR));
+
   const corridors = placeCorridors(grid, rooms, width, height);
+
+  smoothCorridorJunctions(grid, roomMask, width, height);
 
   placeEntranceAndExit(grid, rooms, preferDiagonal, width, height);
 
@@ -123,7 +129,7 @@ export function generateDungeonGrid(
  * so rooms cannot bulge past the established boundary.
  */
 function placeRooms(grid: number[][], width: number, height: number): Room[] {
-  const ATTACH_GAP  = 3; // wall tiles between room floor edges — minimum corridor length
+  const ATTACH_GAP  = 5; // wall tiles between room floor edges — must be ≥ 5 so the gap is ≥ 4 tiles wide, giving a 3-wide corridor room to cross without touching either room face
   const targetCount = Math.max(6, Math.floor((width * height) / 700));
   const rooms: Room[] = [];
 
@@ -343,24 +349,46 @@ function shuffle<T>(arr: T[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Corridor placement TODO: This is not working very well 
+// Corridor placement
 // ---------------------------------------------------------------------------
 
 /**
- * Connects rooms with straight 3-tile-wide corridors.
- * Each room exits from the centre of its wall face nearest to the target room.
- * A 25% chance causes a second connection to the next-nearest room, producing
- * T-junctions where corridors share a wall tile.
+ * Connects rooms in two phases:
+ *
+ * Phase 1 — nearest-neighbour pass: each room connects to its closest
+ * neighbour (plus a 25% chance of a second connection) to produce organic,
+ * varied layouts with loops and T-junctions.
+ *
+ * Phase 2 — connectivity guarantee: a union-find structure tracks which rooms
+ * are already reachable from each other. After Phase 1, any rooms that remain
+ * in isolated components are bridged by the cheapest available edge
+ * (Kruskal-style), ensuring a path always exists from entrance to exit.
  */
 function placeCorridors(grid: number[][], rooms: Room[], width: number, height: number): Corridor[] {
   const corridors: Corridor[] = [];
+  const n = rooms.length;
+  if (n < 2) { return corridors; }
 
-  for (let i = 0; i < rooms.length; i++) {
-    const room = rooms[i];
+  // Union-find helpers for tracking connectivity.
+  const parent = Array.from({ length: n }, (_, i) => i);
+  function find(i: number): number {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+  }
+  function union(a: number, b: number): void {
+    parent[find(a)] = find(b);
+  }
 
-    // Sort all other rooms by centre distance.
+  // Track which room pairs already have a corridor so we never carve duplicates.
+  const connected = new Set<string>();
+  function pairKey(a: number, b: number): string {
+    return a < b ? `${a},${b}` : `${b},${a}`;
+  }
+
+  // Phase 1: nearest-neighbour connections.
+  for (let i = 0; i < n; i++) {
     const others = rooms
-      .map((r, idx) => ({ r, idx, d: (r.cx - room.cx) ** 2 + (r.cy - room.cy) ** 2 }))
+      .map((r, idx) => ({ r, idx, d: (r.cx - rooms[i].cx) ** 2 + (r.cy - rooms[i].cy) ** 2 }))
       .filter(e => e.idx !== i)
       .sort((a, b) => a.d - b.d);
 
@@ -369,9 +397,36 @@ function placeCorridors(grid: number[][], rooms: Room[], width: number, height: 
     const targets = [others[0]];
     if (others.length > 1 && randFloat() < 0.25) { targets.push(others[1]); }
 
-    for (const { r: target } of targets) {
-      const corridor = carveRoomCorridor(grid, room, target, width, height);
-      if (corridor) { corridors.push(corridor); }
+    for (const { r: target, idx: targetIdx } of targets) {
+      const key = pairKey(i, targetIdx);
+      if (connected.has(key)) { continue; }
+      const corridor = carveRoomCorridor(grid, rooms[i], target, width, height);
+      if (corridor) {
+        corridors.push(corridor);
+        connected.add(key);
+        union(i, targetIdx);
+      }
+    }
+  }
+
+  // Phase 2: bridge any remaining disconnected components with the cheapest edges.
+  const edges: Array<{ i: number; j: number; d: number }> = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      edges.push({ i, j, d: (rooms[i].cx - rooms[j].cx) ** 2 + (rooms[i].cy - rooms[j].cy) ** 2 });
+    }
+  }
+  edges.sort((a, b) => a.d - b.d);
+
+  for (const { i, j } of edges) {
+    if (find(i) === find(j)) { continue; }
+    const key = pairKey(i, j);
+    if (connected.has(key)) { continue; }
+    const corridor = carveRoomCorridor(grid, rooms[i], rooms[j], width, height);
+    if (corridor) {
+      corridors.push(corridor);
+      connected.add(key);
+      union(i, j);
     }
   }
 
@@ -379,47 +434,155 @@ function placeCorridors(grid: number[][], rooms: Room[], width: number, height: 
 }
 
 /**
- * Carves a single straight 3-tile-wide corridor from `from` to `to`.
- * Exits from the centre of whichever wall face of `from` points most directly
- * at `to`, and enters `to` through its opposing face. The corridor is L-shaped
- * when the two exit points are not axis-aligned: horizontal segment first, then
- * vertical.
+ * Carves a 3-tile-wide corridor between two rooms without modifying room walls.
+ *
+ * Two routing strategies are tried in order:
+ *
+ * 1. Straight — when the rooms share enough perpendicular overlap, a single
+ *    straight corridor is placed at the centre of that overlap.  The ±1-tile
+ *    carving width is guaranteed to stay inside both room faces.
+ *
+ * 2. Z-shape — when there is no direct overlap, a three-segment path is used:
+ *      • a short horizontal (or vertical) stub out of the first room's face,
+ *      • a perpendicular connector that crosses the gap at its mid-point,
+ *      • a short stub into the second room's face.
+ *    With ATTACH_GAP ≥ 5 the gap is ≥ 4 tiles wide, so the 3-wide connector
+ *    sits entirely inside the gap and never touches either room face.
  */
+/**
+ * Returns the usable perpendicular half-extent at a room's exit face.
+ * For rounded rooms the chamfered corners reduce the floor width at the
+ * outermost column/row, so corridors must stay within this narrower range.
+ */
+function exitHalfExtent(room: Room, axis: 'x' | 'y'): number {
+  // axis 'x' → corridor exits left/right face, perpendicular = Y → hh
+  // axis 'y' → corridor exits top/bottom face, perpendicular = X → hw
+  const perp = axis === 'x' ? room.hh : room.hw;
+  if (room.shape !== 'rounded') { return perp; }
+  const cut = Math.max(1, Math.floor(Math.min(room.hw, room.hh) * 0.25));
+  return perp - cut;
+}
+
 function carveRoomCorridor(grid: number[][], from: Room, to: Room, width: number, height: number): Corridor | null {
   const dx = to.cx - from.cx;
   const dy = to.cy - from.cy;
 
-  // Exit point: centre of the wall face of `from` that faces `to`.
-  let x1: number, y1: number;
   if (Math.abs(dx) >= Math.abs(dy)) {
-    x1 = dx > 0 ? from.cx + from.hw : from.cx - from.hw;
-    y1 = from.cy;
+    // ── Horizontal primary: rooms are side by side ──────────────────────────
+    const leftRoom  = dx >= 0 ? from : to;
+    const rightRoom = dx >= 0 ? to   : from;
+
+    const x1 = leftRoom.cx  + leftRoom.hw;   // right edge of left room
+    const x2 = rightRoom.cx - rightRoom.hw;  // left edge of right room
+    if (x1 >= x2) { return null; }
+
+    // Safe y-range: corridor centre ±1 must lie inside both rooms' floor
+    // at their exit faces (accounting for rounded-room chamfers).
+    const leftExt  = exitHalfExtent(leftRoom,  'x');
+    const rightExt = exitHalfExtent(rightRoom, 'x');
+    const safeMin = Math.max(leftRoom.cy - leftExt + 1, rightRoom.cy - rightExt + 1);
+    const safeMax = Math.min(leftRoom.cy + leftExt - 1, rightRoom.cy + rightExt - 1);
+
+    if (safeMin <= safeMax) {
+      // Strategy 1 — straight corridor through the shared Y overlap zone.
+      const corY = Math.round((safeMin + safeMax) / 2);
+      carveHorizontalCorridor(grid, corY, x1, x2);
+      return { from: { x: x1, y: corY }, to: { x: x2, y: corY }, width: 3 };
+    }
+
+    // Strategy 2 — Z-shape: each stub exits from its own room's centre Y.
+    const gapMid  = Math.round((x1 + x2) / 2);
+    const leftCy  = Math.max(1, Math.min(height - 2, leftRoom.cy));
+    const rightCy = Math.max(1, Math.min(height - 2, rightRoom.cy));
+
+    carveHorizontalCorridor(grid, leftCy,  x1,     gapMid);
+    carveVerticalCorridor  (grid, gapMid,  Math.min(leftCy, rightCy), Math.max(leftCy, rightCy));
+    carveHorizontalCorridor(grid, rightCy, gapMid, x2);
+    return { from: { x: x1, y: leftCy }, to: { x: x2, y: rightCy }, width: 3 };
+
   } else {
-    x1 = from.cx;
-    y1 = dy > 0 ? from.cy + from.hh : from.cy - from.hh;
+    // ── Vertical primary: rooms are above and below ──────────────────────────
+    const topRoom    = dy >= 0 ? from : to;
+    const bottomRoom = dy >= 0 ? to   : from;
+
+    const y1 = topRoom.cy    + topRoom.hh;    // bottom edge of top room
+    const y2 = bottomRoom.cy - bottomRoom.hh; // top edge of bottom room
+    if (y1 >= y2) { return null; }
+
+    // Safe x-range: accounting for rounded-room chamfers at exit faces.
+    const topExt    = exitHalfExtent(topRoom,    'y');
+    const bottomExt = exitHalfExtent(bottomRoom, 'y');
+    const safeMin = Math.max(topRoom.cx - topExt + 1, bottomRoom.cx - bottomExt + 1);
+    const safeMax = Math.min(topRoom.cx + topExt - 1, bottomRoom.cx + bottomExt - 1);
+
+    if (safeMin <= safeMax) {
+      // Strategy 1 — straight corridor.
+      const corX = Math.round((safeMin + safeMax) / 2);
+      carveVerticalCorridor(grid, corX, y1, y2);
+      return { from: { x: corX, y: y1 }, to: { x: corX, y: y2 }, width: 3 };
+    }
+
+    // Strategy 2 — Z-shape: each stub exits from its own room's centre X.
+    const gapMid    = Math.round((y1 + y2) / 2);
+    const topCx     = Math.max(1, Math.min(width - 2, topRoom.cx));
+    const bottomCx  = Math.max(1, Math.min(width - 2, bottomRoom.cx));
+
+    carveVerticalCorridor  (grid, topCx,    y1,     gapMid);
+    carveHorizontalCorridor(grid, gapMid,   Math.min(topCx, bottomCx), Math.max(topCx, bottomCx));
+    carveVerticalCorridor  (grid, bottomCx, gapMid, y2);
+    return { from: { x: topCx, y: y1 }, to: { x: bottomCx, y: y2 }, width: 3 };
   }
+}
 
-  // Entry point: centre of the opposing face of `to`.
-  let x2: number, y2: number;
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    x2 = dx > 0 ? to.cx - to.hw : to.cx + to.hw;
-    y2 = to.cy;
-  } else {
-    x2 = to.cx;
-    y2 = dy > 0 ? to.cy - to.hh : to.cy + to.hh;
+// ---------------------------------------------------------------------------
+// Corridor cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes wall "teeth" at corridor junctions without disrupting room shapes.
+ *
+ * Two cases are smoothed:
+ *   1. Wall with 3+ cardinal floor neighbours — a tiny protrusion.
+ *   2. Wall with floor on 2 adjacent cardinal sides AND their shared diagonal
+ *      also floor — an inner corner of an L-shaped corridor junction.
+ *
+ * To preserve room shapes, tiles cardinally adjacent to any room floor tile
+ * (captured before corridors were carved) are never modified. A snapshot of the
+ * grid prevents cascading — each decision is based on the pre-smoothing state.
+ */
+function smoothCorridorJunctions(grid: number[][], roomMask: boolean[][], width: number, height: number): void {
+  const snap = grid.map(row => [...row]);
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      if (snap[y][x] !== WALL) { continue; }
+
+      // Skip tiles cardinally adjacent to room floor — preserves room edges.
+      if (roomMask[y - 1][x] || roomMask[y + 1][x] ||
+          roomMask[y][x - 1] || roomMask[y][x + 1]) { continue; }
+
+      const n = snap[y - 1][x] === FLOOR;
+      const s = snap[y + 1][x] === FLOOR;
+      const e = snap[y][x + 1] === FLOOR;
+      const w = snap[y][x - 1] === FLOOR;
+      const floorCount = (n ? 1 : 0) + (s ? 1 : 0) + (e ? 1 : 0) + (w ? 1 : 0);
+
+      if (floorCount >= 3) {
+        grid[y][x] = FLOOR;
+        continue;
+      }
+
+      // L-junction inner corner: 2 adjacent cardinal floors + shared diagonal.
+      if (floorCount === 2) {
+        if ((n && e && snap[y - 1][x + 1] === FLOOR) ||
+            (n && w && snap[y - 1][x - 1] === FLOOR) ||
+            (s && e && snap[y + 1][x + 1] === FLOOR) ||
+            (s && w && snap[y + 1][x - 1] === FLOOR)) {
+          grid[y][x] = FLOOR;
+        }
+      }
+    }
   }
-
-  // Clamp endpoints to grid interior.
-  x1 = Math.max(1, Math.min(width  - 2, x1));
-  y1 = Math.max(1, Math.min(height - 2, y1));
-  x2 = Math.max(1, Math.min(width  - 2, x2));
-  y2 = Math.max(1, Math.min(height - 2, y2));
-
-  // Horizontal leg then vertical leg (L-shape or straight).
-  carveHorizontalCorridor(grid, y1, Math.min(x1, x2), Math.max(x1, x2));
-  carveVerticalCorridor(grid, x2, Math.min(y1, y2), Math.max(y1, y2));
-
-  return { from: { x: x1, y: y1 }, to: { x: x2, y: y2 }, width: 3 };
 }
 
 // ---------------------------------------------------------------------------

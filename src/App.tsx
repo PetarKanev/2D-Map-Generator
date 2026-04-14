@@ -13,9 +13,9 @@ import './App.css'
 // ---------------------------------------------------------------------------
 
 const mapTypes = [ // available generator options shown in the map-type dropdown
-  { label: 'Cave',              value: 'Cave',        disabled: false },
-  { label: 'Dungeon',           value: 'Dungeon',     disabled: false },
-  { label: 'Island -- WIP',     value: 'Island',      disabled: true  }
+  { label: 'Cave -- WIP', value: 'Cave', disabled: false },
+  { label: 'Dungeon -- WIP', value: 'Dungeon', disabled: false },
+  { label: 'Island -- WIP', value: 'Island', disabled: true  }
 ];
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ function formatTime(ms: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// App 
 // ---------------------------------------------------------------------------
 
 function App() {
@@ -46,8 +46,10 @@ function App() {
   const lastUsedSeed = useRef<number | null>(null)
   const lastUsedPreferDiagonal = useRef<boolean>(true)
 
-  // Handlers
-
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  
   /** Restricts the seed input to digits only. */
   function handleSeedChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (/^\d*$/.test(e.target.value)) {
