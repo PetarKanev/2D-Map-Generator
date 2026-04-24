@@ -144,5 +144,16 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
   }
   graphics.fill(0xff0000);
 
+  // TODO: REVERT — remove DEBUG tile rendering (tile value 4, blue) once corridors are FLOOR again
+  // Debug corridors — blue
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] === 4) { // TODO: REVERT — remove this entire block
+        graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+      }
+    }
+  }
+  graphics.fill(0x0000ff); // TODO: REVERT — remove this line
+
   pixiApp!.stage.addChild(graphics);
 }
