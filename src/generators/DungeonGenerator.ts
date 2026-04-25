@@ -4,8 +4,7 @@ const FLOOR = 0;
 const WALL = 1;
 const ENTRANCE = 2;
 const EXIT = 3;
-// TODO: REVERT — remove DEBUG tiles and revert to FLOOR, leave the const DEBUG in place
-const DEBUG = 4;
+//const DEBUG = 4;
 
 // Dungeon generation parameters
 const MIN_ROOM_RADIUS = 8;  // minimum half-extent of any room (produces an 17×17 tile room)
@@ -65,6 +64,7 @@ export interface Corridor {
   width: number; // tile width of the carved passage (2 or 3)
 }
 
+/** A candidate entrance/exit opening on the map border, associated with the nearest room. */
 interface BorderOpening {
   cx: number;       // center x of the 3-cell stamp
   cy: number;       // center y of the 3-cell stamp
@@ -80,6 +80,24 @@ export interface DungeonMetadata {
   floorPercent: number;
   generationTimeMs: number;
   preferDiagonal?: boolean;
+}
+
+/** Exit face coordinates and perpendicular floor coverage for a room in one direction. */
+interface FaceInfo {
+  faceCoord: number;  // fixed coordinate of the exit face (x for left/right, y for top/bottom)
+  coverMin: number;   // min perpendicular coordinate with floor at the face
+  coverMax: number;   // max perpendicular coordinate with floor at the face
+  perpCenter: number; // midpoint of coverage — used as the Z-shape stub row/column
+}
+
+/** One wall face of a room's AABB, used by findFaceEntry to rank and scan candidate BFS entry points. */
+interface Face {
+  axis: 'row' | 'col'; // 'row': scan along x at fixed y; 'col': scan along y at fixed x
+  fixed: number;       // fixed coordinate (x for 'col', y for 'row')
+  scanMin: number;
+  scanMax: number;
+  midCx: number;       // face midpoint x — used to rank faces by proximity to the target room
+  midCy: number;       // face midpoint y
 }
 
 // ---------------------------------------------------------------------------
@@ -101,21 +119,17 @@ export function generateDungeonGrid(
 
   const rooms = placeRooms(grid, width, height);
 
-  // Snapshot room floor tiles before corridors are carved, so the smoothing
-  // pass can distinguish room edges (preserve) from corridor-only areas (smooth).
-  const roomMask: boolean[][] = grid.map(row => row.map(v => v === FLOOR));
+  const roomFloors = snapshotFloorSet(grid, width, height);
 
   const corridors = placeCorridors(grid, rooms, width, height);
 
-  // TODO - remove this smoothing as it's causing issues
-  //smoothCorridorJunctions(grid, roomMask, width, height);
+  removeOrphanedCorridors(grid, roomFloors, width, height);
 
   removeIsolatedFloor(grid, width, height);
 
   placeEntranceAndExit(grid, rooms, preferDiagonal, width, height);
 
-  // TODO: REVERT — remove `|| v === DEBUG` once corridors are FLOOR again
-  const floorCells = grid.flat().filter(v => v === FLOOR || v === DEBUG || v === ENTRANCE || v === EXIT).length;
+  const floorCells = grid.flat().filter(v => v === FLOOR || v === ENTRANCE || v === EXIT).length;
   const floorPercent = Math.round((floorCells / (width * height)) * 100);
   const generationTimeMs = Math.round(performance.now() - startTime);
 
@@ -276,6 +290,15 @@ function buildRoomShape(radius: number): Pick<Room, 'hw' | 'hh' | 'shape' | 'arm
   }
 }
 
+/** Fills a clamped rectangle of FLOOR tiles into the grid. */
+function carveRect(grid: number[][], rows: number, cols: number, x0: number, y0: number, x1: number, y1: number): void {
+  for (let ty = Math.max(0, y0); ty <= Math.min(rows - 1, y1); ty++) {
+    for (let tx = Math.max(0, x0); tx <= Math.min(cols - 1, x1); tx++) {
+      grid[ty][tx] = FLOOR;
+    }
+  }
+}
+
 /**
  * Carves a room's shape into the grid.
  * All tile writes are clamped to valid grid indices so arm tiles that stray
@@ -287,19 +310,11 @@ function carveRoom(grid: number[][], room: Room): void {
   const rows = grid.length;
   const cols = grid[0].length;
 
-  const carveRect = (x0: number, y0: number, x1: number, y1: number): void => {
-    for (let ty = Math.max(0, y0); ty <= Math.min(rows - 1, y1); ty++) {
-      for (let tx = Math.max(0, x0); tx <= Math.min(cols - 1, x1); tx++) {
-        grid[ty][tx] = FLOOR;
-      }
-    }
-  };
-
   switch (shape) {
 
     case 'square':
     case 'rect':
-      carveRect(cx - hw, cy - hh, cx + hw, cy + hh);
+      carveRect(grid, rows, cols, cx - hw, cy - hh, cx + hw, cy + hh);
       break;
 
     case 'rounded': {
@@ -317,10 +332,10 @@ function carveRoom(grid: number[][], room: Room): void {
 
     case 'lshape':
       // Main rectangle plus the arm rectangle.
-      carveRect(cx - hw, cy - hh, cx + hw, cy + hh);
+      carveRect(grid, rows, cols, cx - hw, cy - hh, cx + hw, cy + hh);
       if (arm) {
         const ax = cx + arm.dx, ay = cy + arm.dy;
-        carveRect(ax - arm.hw, ay - arm.hh, ax + arm.hw, ay + arm.hh);
+        carveRect(grid, rows, cols, ax - arm.hw, ay - arm.hh, ax + arm.hw, ay + arm.hh);
       }
       break;
   }
@@ -375,21 +390,8 @@ function placeCorridors(grid: number[][], rooms: Room[], width: number, height: 
   const n = rooms.length;
   if (n < 2) { return corridors; }
 
-  // Union-find helpers for tracking connectivity.
   const parent = Array.from({ length: n }, (_, i) => i);
-  function find(i: number): number {
-    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
-    return i;
-  }
-  function union(a: number, b: number): void {
-    parent[find(a)] = find(b);
-  }
-
-  // Track which room pairs already have a corridor so we never carve duplicates.
   const connected = new Set<string>();
-  function pairKey(a: number, b: number): string {
-    return a < b ? `${a},${b}` : `${b},${a}`;
-  }
 
   // Phase 1: nearest-neighbour connections.
   for (let i = 0; i < n; i++) {
@@ -410,7 +412,7 @@ function placeCorridors(grid: number[][], rooms: Room[], width: number, height: 
       if (corridor) {
         corridors.push(corridor);
         connected.add(key);
-        union(i, targetIdx);
+        unionRoots(parent, i, targetIdx);
       }
     }
   }
@@ -425,41 +427,39 @@ function placeCorridors(grid: number[][], rooms: Room[], width: number, height: 
   edges.sort((a, b) => a.d - b.d);
 
   for (const { i, j } of edges) {
-    if (find(i) === find(j)) { continue; }
+    if (findRoot(parent, i) === findRoot(parent, j)) { continue; }
     const key = pairKey(i, j);
     if (connected.has(key)) { continue; }
     const corridor = carveRoomCorridor(grid, rooms[i], rooms[j], rooms, width, height);
     if (corridor) {
       corridors.push(corridor);
       connected.add(key);
-      union(i, j);
+      unionRoots(parent, i, j);
     }
   }
 
   return corridors;
 }
 
-/**
- * Carves a 3-tile-wide corridor between two rooms without modifying room walls.
- *
- * Two routing strategies are tried in order:
- *
- * 1. Straight — when the rooms share enough perpendicular overlap, a single
- *    straight corridor is placed at the centre of that overlap.  The ±1-tile
- *    carving width is guaranteed to stay inside both room faces.
- *
- * 2. Z-shape — when there is no direct overlap, a three-segment path is used:
- *      • a short horizontal (or vertical) stub out of the first room's face,
- *      • a perpendicular connector that crosses the gap at its mid-point,
- *      • a short stub into the second room's face.
- *    With ATTACH_GAP ≥ 5 the gap is ≥ 4 tiles wide, so the 3-wide connector
- *    sits entirely inside the gap and never touches either room face.
- */
-/**
- * Returns the usable perpendicular half-extent at a room's exit face.
- * For rounded rooms the chamfered corners reduce the floor width at the
- * outermost column/row, so corridors must stay within this narrower range.
- */
+/** Union-find: returns the root of i with path compression. */
+function findRoot(parent: number[], i: number): number {
+  while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+  return i;
+}
+
+/** Union-find: merges the components containing a and b. */
+function unionRoots(parent: number[], a: number, b: number): void {
+  parent[findRoot(parent, a)] = findRoot(parent, b);
+}
+
+/** Canonical string key for an unordered room-index pair. */
+function pairKey(a: number, b: number): string {
+  return a < b ? `${a},${b}` : `${b},${a}`;
+}
+
+/** Usable perpendicular half-extent at a room's exit face.
+ * Rounded rooms have chamfered corners that reduce the floor width at the
+ * outermost column/row, so corridors must stay within this narrower range. */
 function exitHalfExtent(room: Room, axis: 'x' | 'y'): number {
   // axis 'x' → corridor exits left/right face, perpendicular = Y → hh
   // axis 'y' → corridor exits top/bottom face, perpendicular = X → hw
@@ -469,24 +469,9 @@ function exitHalfExtent(room: Room, axis: 'x' | 'y'): number {
   return perp - cut;
 }
 
-/**
- * Returns the actual exit face coordinate and perpendicular floor coverage for
- * a room in a given direction. Accounts for L-shape arms — when the arm faces
- * the exit direction the arm's outer face and extent are returned instead of
- * the main rectangle's, since the arm IS the exit face in that case.
- *
- *   faceCoord  — fixed coordinate of the exit face (x for left/right, y for top/bottom)
- *   coverMin   — min perpendicular coordinate that has floor at the face
- *   coverMax   — max perpendicular coordinate that has floor at the face
- *   perpCenter — midpoint of coverage, used as the Z-shape stub row/column
- */
-interface FaceInfo {
-  faceCoord: number;
-  coverMin: number;
-  coverMax: number;
-  perpCenter: number;
-}
-
+/** Returns the exit face coordinate and perpendicular floor coverage for a room.
+ * When the L-shape arm points in the requested direction its outer face is used
+ * instead of the main rectangle's — the arm IS the exit face in that case. */
 function getRoomFace(room: Room, dir: 'left' | 'right' | 'top' | 'bottom'): FaceInfo {
   const { cx, cy, hw, hh, arm } = room;
 
@@ -591,24 +576,12 @@ function verticalStripClear(mask: boolean[][], x: number, y1: number, y2: number
 }
 
 /**
- * BFS fallback router. Finds a rectilinear path from the `from` room's centre
- * to the `to` room's centre where every cell's 3×3 footprint is free of
- * forbidden tiles, then carves the 3-wide corridor along the path.
- */
-/**
  * Finds the best entry/exit point on a room's outer wall face toward another room.
  *
- * All four outer wall faces (bbox + 2, one tile outside the wall ring) are considered. Faces
- * are ranked by the Euclidean distance from their midpoint to `toward`'s centre,
- * so the face pointing most directly at the other room is tried first. For each
- * face, candidate positions are scanned outward from the midpoint using
- * `scanOutward` and the first tile whose 3×3 footprint is clear of forbidden
- * tiles is returned.
- *
- * Considering all four faces — rather than only the primary axis — prevents a
- * blocked primary face from forcing BFS to start at a wall-ring corner, which
- * previously produced awkward corner-chewing stamps at the room boundary.
- *
+ * All four outer wall faces (bbox+2) are considered and ranked by distance to
+ * `toward`'s centre, so the face pointing most directly at the other room is
+ * tried first. Candidate positions are scanned outward from the face midpoint
+ * and the first tile whose 3×3 footprint is clear of forbidden tiles is returned.
  * Returns null if no clear cell exists on any face.
  */
 function findFaceEntry(room: Room, toward: Room, mask: boolean[][], width: number, height: number): Coord | null {
@@ -616,18 +589,8 @@ function findFaceEntry(room: Room, toward: Room, mask: boolean[][], width: numbe
   const midX = Math.round((bb.minX + bb.maxX) / 2);
   const midY = Math.round((bb.minY + bb.maxY) / 2);
 
-  interface Face {
-    axis: 'row' | 'col'; // 'row': scan along x at fixed y; 'col': scan along y at fixed x
-    fixed: number;       // the fixed coordinate (x for 'col' faces, y for 'row' faces)
-    scanMin: number;
-    scanMax: number;
-    midCx: number;       // face midpoint x (for ranking against `toward`)
-    midCy: number;       // face midpoint y
-  }
-
-  // Use bbox+2 (not bbox+1) so the 3×3 stamp at the entry point covers bbox+1..bbox+3
-  // and never overwrites the room's floor tile at bbox. The carved wall tile at bbox+1
-  // is still adjacent to room floor at bbox — connection is valid.
+  // bbox+2 so the 3×3 stamp covers bbox+1..bbox+3 — never overwrites the room's floor
+  // tile at bbox. The carved wall tile at bbox+1 is adjacent to room floor — connection valid.
   const faces: Face[] = [
     { axis: 'col', fixed: bb.maxX + 2, scanMin: bb.minY, scanMax: bb.maxY, midCx: bb.maxX + 2, midCy: midY },
     { axis: 'col', fixed: bb.minX - 2, scanMin: bb.minY, scanMax: bb.maxY, midCx: bb.minX - 2, midCy: midY },
@@ -653,28 +616,42 @@ function findFaceEntry(room: Room, toward: Room, mask: boolean[][], width: numbe
   return null;
 }
 
+/** Carves a 3-tile-wide vertical corridor strip from y=yStart to y=yEnd at column cx. */
+function carveVerticalCorridor(grid: number[][], cx: number, yStart: number, yEnd: number): void {
+  for (let y = yStart; y <= yEnd; y++) {
+    grid[y][cx - 1] = FLOOR;
+    grid[y][cx]     = FLOOR;
+    grid[y][cx + 1] = FLOOR;
+  }
+}
+
+/** Carves a 3-tile-wide horizontal corridor strip from x=xStart to x=xEnd at row cy. */
+function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, xEnd: number): void {
+  for (let x = xStart; x <= xEnd; x++) {
+    grid[cy - 1][x] = FLOOR;
+    grid[cy][x]     = FLOOR;
+    grid[cy + 1][x] = FLOOR;
+  }
+}
+
 /**
  * Last-resort corridor router used when neither the straight nor Z-shape
  * strategy can find a clear path between two rooms.
  *
- * Start and goal are the outer wall tiles (bbox + 1) on the face of each
- * room that points toward the other, found via `findFaceEntry`. Routing
- * from wall face to wall face means the BFS path stays entirely outside
- * both room interiors — the 3×3 stamps at the endpoints naturally overlap
- * one tile into each room's floor, creating a clean doorway without
- * chewing into room corners.
+ * Start and goal are bbox+2 face tiles found via `findFaceEntry` — one tile
+ * outside the wall ring on the face of each room pointing toward the other.
+ * The BFS path therefore stays entirely outside both room interiors; the 3×3
+ * stamps at the endpoints carve through the wall ring (bbox+1) to open a
+ * clean doorway into each room's floor at bbox.
  *
- * Every candidate BFS cell is tested with `footprintClear`: the 3×3
- * neighbourhood around it must be free of forbidden tiles (wall rings of
- * all other rooms), so a 3-wide carved corridor never clips a bystander room.
+ * Every BFS candidate is tested with `footprintClear`: the 3×3 neighbourhood
+ * must be free of forbidden tiles (wall rings of all non-endpoint rooms), so
+ * the carved corridor never clips a bystander room.
  *
  * BFS uses a head-index rather than Array.shift() to avoid O(n) dequeues.
- * It guarantees the shortest-tile-count rectilinear route when one exists.
- *
- * Once the goal is found the path is reconstructed via the `parent` table
- * and carved by stamping a 3×3 FLOOR footprint at every cell, which unions
- * into a continuous 3-wide passage along any sequence of horizontal and
- * vertical segments. Returns null if no valid route exists.
+ * The path is reconstructed via `parent` and carved by stamping a 3×3
+ * footprint at every cell — overlapping squares union into a continuous
+ * 3-wide passage. Returns null if no valid route exists.
  */
 function bfsCorridor(
   grid: number[][], mask: boolean[][], from: Room, to: Room, width: number, height: number
@@ -722,17 +699,16 @@ function bfsCorridor(
 
   if (!found) { return null; }
 
-  // Walk the parent chain from goal back to start and stamp a 3×3 DEBUG
-  // footprint at each cell — the overlapping squares union into a clean
-  // 3-wide passage that rounds any corners without leaving wall slivers.
-  // TODO: REVERT — change DEBUG back to FLOOR
+  // Walk the parent chain from goal back to start and stamp a 3×3 footprint
+  // at each cell — the overlapping squares union into a clean 3-wide passage
+  // that rounds any corners without leaving wall slivers.
   let cur: Coord | null = goal;
   while (cur) {
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         const nx = cur.x + dx, ny = cur.y + dy;
         if (nx >= 0 && ny >= 0 && nx < width && ny < height) {
-          grid[ny][nx] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
+          grid[ny][nx] = FLOOR;
         }
       }
     }
@@ -742,6 +718,16 @@ function bfsCorridor(
   return { from: start, to: goal, width: 3 };
 }
 
+/**
+ * Attempts to connect two rooms with a corridor using three strategies in order:
+ *
+ * 1. Straight — single horizontal or vertical strip if both face coverages overlap.
+ * 2. Z-shape  — two stubs from each room's face perpendicular centre joined by a
+ *               perpendicular connector in the gap between them.
+ * 3. BFS      — grid pathfinding when the direct routes are blocked by other rooms.
+ *
+ * Returns a Corridor on success, or null if no valid route could be carved.
+ */
 function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[], width: number, height: number): Corridor | null {
   const mask = buildForbiddenMask(rooms, new Set([from, to]), width, height);
   const dx = to.cx - from.cx;
@@ -800,9 +786,11 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       offsetYRight = rightCy + 1;
     }
 
-    console.log("Z-Corridor  >=");
-    console.log("dx", dx);
-    console.log("dy", dy);
+    // If the offset row has no room floor at either face tile the arms would be
+    // disconnected — fall through immediately to BFS rather than carving a stub.
+    if (grid[offsetYLeft][x1] !== FLOOR || grid[offsetYRight][x2] !== FLOOR) {
+      return bfsCorridor(grid, mask, from, to, width, height);
+    }
 
     // gapMid range starts at cx1+2/ends at cx2-2 so the 3-wide vertical connector
     // (gapMid-1..gapMid+1) stays ≥1 wall tile away from each room face (1-tile wall rule).
@@ -811,9 +799,9 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       if (horizontalStripClear(mask, leftCy, cx1, gapMid) &&
           verticalStripClear(mask, gapMid, zMin, zMax) &&
           horizontalStripClear(mask, rightCy, gapMid, cx2)) {
-        carveHorizontalCorridor(grid, offsetYLeft,  cx1,    gapMid); // TODO - depending on direction
+        carveHorizontalCorridor(grid, offsetYLeft,  cx1,    gapMid);
         carveVerticalCorridor  (grid, gapMid,  zMin,   zMax);
-        carveHorizontalCorridor(grid, offsetYRight, gapMid, cx2); // TODO + depending on direction
+        carveHorizontalCorridor(grid, offsetYRight, gapMid, cx2);
         return { from: { x: x1, y: leftCy }, to: { x: x2, y: rightCy }, width: 3 };
       }
     }
@@ -858,10 +846,6 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
     const zMin     = Math.min(topCx, bottomCx);
     const zMax     = Math.max(topCx, bottomCx);
 
-    console.log("Z-Corridor <");
-    console.log("dx", dx);
-    console.log("dy", dy);
-
     // Offset calc
     if((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
       offsetXTop = topCx + 1;
@@ -871,6 +855,12 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       offsetXBottom = bottomCx + 1;
     }
 
+    // If the offset column has no room floor at either face tile the arms would be
+    // disconnected — fall through immediately to BFS rather than carving a stub.
+    if (grid[y1][offsetXTop] !== FLOOR || grid[y2][offsetXBottom] !== FLOOR) {
+      return bfsCorridor(grid, mask, from, to, width, height);
+    }
+
     // gapMid range starts at cy1+2/ends at cy2-2 so the 3-wide horizontal connector
     // (gapMid-1..gapMid+1) stays ≥1 wall tile away from each room face (1-tile wall rule).
     const midY     = Math.round((cy1 + cy2) / 2);
@@ -878,9 +868,9 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       if (verticalStripClear(mask, topCx, cy1, gapMid) &&
           horizontalStripClear(mask, gapMid, zMin, zMax) &&
           verticalStripClear(mask, bottomCx, gapMid, cy2)) {
-        carveVerticalCorridor  (grid, offsetXTop,    cy1,    gapMid); // TODO - depending on direction
+        carveVerticalCorridor  (grid, offsetXTop,    cy1,    gapMid);
         carveHorizontalCorridor(grid, gapMid,   zMin,   zMax);
-        carveVerticalCorridor  (grid, offsetXBottom, gapMid, cy2); // TODO + depending on direction
+        carveVerticalCorridor  (grid, offsetXBottom, gapMid, cy2);
         return { from: { x: topCx, y: y1 }, to: { x: bottomCx, y: y2 }, width: 3 };
       }
     }
@@ -894,59 +884,100 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
 // Corridor cleanup
 // ---------------------------------------------------------------------------
 
+/** Returns a Set of encoded positions (y * width + x) for every FLOOR tile in the grid. */
+function snapshotFloorSet(grid: number[][], width: number, height: number): Set<number> {
+  const set = new Set<number>();
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (grid[y][x] === FLOOR) { set.add(y * width + x); }
+    }
+  }
+  return set;
+}
+
 /**
- * Removes wall "teeth" at corridor junctions without disrupting room shapes.
+ * Destroys any corridor component that does not border at least two distinct
+ * room components. Such components are dangling arms that never connect two
+ * rooms and would leave unreachable dead-end passages.
  *
- * Two cases are smoothed:
- *   1. Wall with 3+ cardinal floor neighbours — a tiny protrusion. TODO -- Handle the inverse, a non corridor tile protruding inside the corridor
- *   2. Wall with floor on 2 adjacent cardinal sides AND their shared diagonal
- *      also floor — an inner corner of an L-shaped corridor junction.
+ * Corridor tiles are identified as FLOOR tiles whose position was NOT in
+ * `roomFloors` (the snapshot taken before placeCorridors ran). Room tiles
+ * stay in `roomFloors`; corridor tiles do not, so the two sets are disjoint.
  *
- * To preserve room shapes, tiles within Chebyshev distance 1 of any room floor
- * tile (captured before corridors were carved) are never modified — this covers
- * both cardinal and diagonal neighbours, so room corners stay crisp. A snapshot
- * of the grid prevents cascading — each decision is based on the pre-smoothing state.
+ * Algorithm per corridor component:
+ *   1. BFS over corridor tiles to collect the component.
+ *   2. Collect unique room-tile seeds adjacent to the component.
+ *   3. BFS over room tiles only from those seeds, counting distinct room
+ *      components (rooms remain separate islands because corridor tiles are
+ *      excluded from traversal).
+ *   4. If roomCount < 2, convert every tile in the component to WALL.
  */
-function smoothCorridorJunctions(grid: number[][], roomMask: boolean[][], width: number, height: number): void {
-  const snap = grid.map(row => [...row]);
+function removeOrphanedCorridors(grid: number[][], roomFloors: Set<number>, width: number, height: number): void {
+  const visited: boolean[][] = Array.from({ length: height }, () => new Array(width).fill(false));
 
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      if (snap[y][x] !== WALL) { continue; }
+  for (let sy = 0; sy < height; sy++) {
+    for (let sx = 0; sx < width; sx++) {
+      const startKey = sy * width + sx;
+      if (visited[sy][sx] || grid[sy][sx] !== FLOOR || roomFloors.has(startKey)) { continue; }
 
-      // Skip tiles within 1 tile (Chebyshev) of room floor — preserves edges and corners.
-      if (roomMask[y - 1][x - 1] || roomMask[y - 1][x] || roomMask[y - 1][x + 1] ||
-          roomMask[y]    [x - 1] ||                        roomMask[y]    [x + 1] ||
-          roomMask[y + 1][x - 1] || roomMask[y + 1][x] || roomMask[y + 1][x + 1]) { continue; }
-
-      // TODO: REVERT — also check `=== DEBUG` here (or just `!== WALL`) once corridors are FLOOR again
-      const n = snap[y - 1][x] === FLOOR || snap[y - 1][x] === DEBUG;
-      const s = snap[y + 1][x] === FLOOR || snap[y + 1][x] === DEBUG;
-      const e = snap[y][x + 1] === FLOOR || snap[y][x + 1] === DEBUG;
-      const w = snap[y][x - 1] === FLOOR || snap[y][x - 1] === DEBUG;
-      const floorCount = (n ? 1 : 0) + (s ? 1 : 0) + (e ? 1 : 0) + (w ? 1 : 0);
-
-      // Determine whether to fill as corridor or room floor: if any cardinal neighbour is
-      // a corridor tile (DEBUG) and none are room floor (FLOOR), fill as DEBUG so smoothed
-      // junction corners are visually indistinguishable from the corridor.
-      // TODO: REVERT — once corridors are FLOOR again, always fill as FLOOR (remove the ternary)
-      const hasCorridorNeighbour = (n && snap[y-1][x] === DEBUG) || (s && snap[y+1][x] === DEBUG) ||
-                                   (e && snap[y][x+1] === DEBUG) || (w && snap[y][x-1] === DEBUG);
-      const fillValue = hasCorridorNeighbour ? DEBUG : FLOOR;
-
-      if (floorCount >= 3) {
-        grid[y][x] = fillValue;
-        continue;
+      // BFS — collect all tiles in this corridor component.
+      const component: Coord[] = [];
+      const q: Coord[] = [{ x: sx, y: sy }];
+      visited[sy][sx] = true;
+      let head = 0;
+      while (head < q.length) {
+        const cur = q[head++];
+        component.push(cur);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cur.x + dx, ny = cur.y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) { continue; }
+          const key = ny * width + nx;
+          if (visited[ny][nx] || grid[ny][nx] !== FLOOR || roomFloors.has(key)) { continue; }
+          visited[ny][nx] = true;
+          q.push({ x: nx, y: ny });
+        }
       }
 
-      // L-junction inner corner: 2 adjacent cardinal floors + shared diagonal.
-      // TODO: REVERT — remove the `|| snap[...] === DEBUG` checks once corridors are FLOOR again
-      if (floorCount === 2) {
-        if ((n && e && (snap[y - 1][x + 1] === FLOOR || snap[y - 1][x + 1] === DEBUG)) ||
-            (n && w && (snap[y - 1][x - 1] === FLOOR || snap[y - 1][x - 1] === DEBUG)) ||
-            (s && e && (snap[y + 1][x + 1] === FLOOR || snap[y + 1][x + 1] === DEBUG)) ||
-            (s && w && (snap[y + 1][x - 1] === FLOOR || snap[y + 1][x - 1] === DEBUG))) {
-          grid[y][x] = fillValue;
+      // Collect unique room tiles adjacent to the corridor component.
+      const roomSeeds: Coord[] = [];
+      const seenRoom = new Set<number>();
+      for (const { x, y } of component) {
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) { continue; }
+          const key = ny * width + nx;
+          if (!roomFloors.has(key) || seenRoom.has(key)) { continue; }
+          seenRoom.add(key);
+          roomSeeds.push({ x: nx, y: ny });
+        }
+      }
+
+      // BFS over room tiles only from each seed, counting distinct room components.
+      const roomVisited = new Set<number>();
+      let roomCount = 0;
+      for (const seed of roomSeeds) {
+        const seedKey = seed.y * width + seed.x;
+        if (roomVisited.has(seedKey)) { continue; }
+        roomCount++;
+        const rq: Coord[] = [seed];
+        roomVisited.add(seedKey);
+        let rhead = 0;
+        while (rhead < rq.length) {
+          const cur = rq[rhead++];
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = cur.x + dx, ny = cur.y + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) { continue; }
+            const key = ny * width + nx;
+            if (!roomFloors.has(key) || roomVisited.has(key)) { continue; }
+            roomVisited.add(key);
+            rq.push({ x: nx, y: ny });
+          }
+        }
+      }
+
+      if (roomCount < 2) {
+        for (const { x, y } of component) {
+          grid[y][x] = WALL;
         }
       }
     }
@@ -955,8 +986,8 @@ function smoothCorridorJunctions(grid: number[][], roomMask: boolean[][], width:
 
 /**
  * Keeps only the largest 4-connected FLOOR component. Any smaller disconnected
- * patches — typically 1–3 tile slivers left behind by the smoothing pass — are
- * converted back to WALL so the dungeon never contains unreachable floor islands.
+ * patches are converted back to WALL so the dungeon never contains unreachable
+ * floor islands.
  */
 function removeIsolatedFloor(grid: number[][], width: number, height: number): void {
   const visited: boolean[][] = Array.from({ length: height }, () => new Array(width).fill(false));
@@ -964,8 +995,7 @@ function removeIsolatedFloor(grid: number[][], width: number, height: number): v
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      // TODO: REVERT — also include `=== DEBUG` once corridors are FLOOR again (or just `!== WALL`)
-      if (visited[y][x] || (grid[y][x] !== FLOOR && grid[y][x] !== DEBUG)) { continue; }
+      if (visited[y][x] || grid[y][x] !== FLOOR) { continue; }
       const tiles: Coord[] = [];
       const q: Coord[] = [{ x, y }];
       visited[y][x] = true;
@@ -976,8 +1006,7 @@ function removeIsolatedFloor(grid: number[][], width: number, height: number): v
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
           const nx = cur.x + dx, ny = cur.y + dy;
           if (nx < 0 || ny < 0 || nx >= width || ny >= height) { continue; }
-          // TODO: REVERT — also include `=== DEBUG` once corridors are FLOOR again
-          if (visited[ny][nx] || (grid[ny][nx] !== FLOOR && grid[ny][nx] !== DEBUG)) { continue; }
+          if (visited[ny][nx] || grid[ny][nx] !== FLOOR) { continue; }
           visited[ny][nx] = true;
           q.push({ x: nx, y: ny });
         }
@@ -1008,33 +1037,37 @@ function removeIsolatedFloor(grid: number[][], width: number, height: number): v
  * Places a 3×1 entrance and a 3×1 exit on the map border in different quadrants
  * (preferring opposite quadrants when preferDiagonal is set), each connected to
  * the nearest room centre via a 3-tile-wide straight corridor.
+ *
+ * Only accepts a quadrant pair if the shortest walkable path between their
+ * floor targets is at least 25% of the grid diagonal.
  */
 function placeEntranceAndExit(grid: number[][], rooms: Room[], preferDiagonal: boolean, width: number, height: number): void {
   const best = findBestOpeningPerQuadrant(rooms, width, height);
-  const minDist = width / 4;
+  const minTraversable = Math.sqrt(width * width + height * height) * 0.25;
 
   let entranceOpening: BorderOpening | null = null;
   let exitOpening: BorderOpening | null = null;
 
   if (preferDiagonal) {
-    for (const [a, b] of [[0, 3], [1, 2]] as [number, number][]) {
-      if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
-        entranceOpening = best[a];
-        exitOpening = best[b];
-        break;
-      }
+    const diagonalPairs: [number, number][] = [[0, 3], [1, 2]];
+    shuffle(diagonalPairs);
+    for (const [a, b] of diagonalPairs) {
+      const pair = pickOpeningPair(grid, best, a, b, minTraversable, width, height);
+      if (pair) { [entranceOpening, exitOpening] = pair; break; }
     }
   }
 
   if (entranceOpening === null) {
-    outer: for (let a = 0; a < 4; a++) {
+    const allPairs: [number, number][] = [];
+    for (let a = 0; a < 4; a++) {
       for (let b = a + 1; b < 4; b++) {
-        if (best[a] !== null && best[b] !== null && openingDistance(best[a]!, best[b]!) >= minDist) {
-          entranceOpening = best[a];
-          exitOpening = best[b];
-          break outer;
-        }
+        allPairs.push([a, b]);
       }
+    }
+    shuffle(allPairs);
+    for (const [a, b] of allPairs) {
+      const pair = pickOpeningPair(grid, best, a, b, minTraversable, width, height);
+      if (pair) { [entranceOpening, exitOpening] = pair; break; }
     }
   }
 
@@ -1045,28 +1078,83 @@ function placeEntranceAndExit(grid: number[][], rooms: Room[], preferDiagonal: b
 }
 
 /**
+ * Returns [entrance, exit] openings if the walkable path between their floor
+ * targets meets the minimum traversable distance, or null if the pair fails.
+ * Entrance/exit assignment is randomised.
+ */
+function pickOpeningPair(
+  grid: number[][],
+  best: (BorderOpening | null)[],
+  a: number,
+  b: number,
+  minTraversable: number,
+  width: number,
+  height: number
+): [BorderOpening, BorderOpening] | null {
+  if (best[a] === null || best[b] === null) { return null; }
+  const dist = bfsDistance(grid, best[a]!.floorTarget, best[b]!.floorTarget, width, height);
+  if (dist < 0 || dist < minTraversable) { return null; }
+  return randFloat() < 0.5
+    ? [best[a]!, best[b]!]
+    : [best[b]!, best[a]!];
+}
+
+/** BFS shortest walkable path distance between two grid points. Returns -1 if unreachable. */
+function bfsDistance(grid: number[][], start: Coord, goal: Coord, width: number, height: number): number {
+  const dist: number[][] = Array.from({ length: height }, () => new Array(width).fill(-1));
+  const queue: Coord[] = [start];
+  dist[start.y][start.x] = 0;
+  let head = 0;
+  while (head < queue.length) {
+    const { x, y } = queue[head++];
+    if (x === goal.x && y === goal.y) { return dist[y][x]; }
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) { continue; }
+      if (dist[ny][nx] !== -1) { continue; }
+      const v = grid[ny][nx];
+      if (v !== FLOOR) { continue; }
+      dist[ny][nx] = dist[y][x] + 1;
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return -1;
+}
+
+/**
  * For each border quadrant, finds the room whose centre is closest to that edge.
- * The floorTarget is the room centre so stampOpening tunnels to the middle of the room.
+ * The floorTarget is the room's AABB edge so stampOpening connects to the actual wall face.
  */
 function findBestOpeningPerQuadrant(rooms: Room[], width: number, height: number): (BorderOpening | null)[] {
   const best: (BorderOpening | null)[] = [null, null, null, null];
-
-  function consider(o: BorderOpening): void {
-    const q = o.quadrant;
-    if (best[q] === null || o.distToFloor < best[q]!.distToFloor) { best[q] = o; }
-  }
 
   for (const room of rooms) {
     const { cx, cy } = room;
     const bb = getRoomBounds(room);
     // distToFloor uses actual AABB so L-shape arms are correctly ranked by proximity to border.
-    consider({ cx, cy: 0,          edge: 'top',    quadrant: borderQuadrant(cx, 0,          'top',    width, height), distToFloor: bb.minY,              floorTarget: { x: cx, y: bb.minY } });
-    consider({ cx, cy: height - 1, edge: 'bottom', quadrant: borderQuadrant(cx, height - 1, 'bottom', width, height), distToFloor: height - 1 - bb.maxY, floorTarget: { x: cx, y: bb.maxY } });
-    consider({ cx: 0,         cy,  edge: 'left',   quadrant: borderQuadrant(0,         cy,  'left',   width, height), distToFloor: bb.minX,              floorTarget: { x: bb.minX, y: cy } });
-    consider({ cx: width - 1, cy,  edge: 'right',  quadrant: borderQuadrant(width - 1, cy,  'right',  width, height), distToFloor: width - 1 - bb.maxX,  floorTarget: { x: bb.maxX, y: cy } });
+    considerOpening(best, { cx, cy: 0,          edge: 'top',    quadrant: borderQuadrant(cx, 0,          'top',    width, height), distToFloor: bb.minY,              floorTarget: { x: cx, y: bb.minY } });
+    considerOpening(best, { cx, cy: height - 1, edge: 'bottom', quadrant: borderQuadrant(cx, height - 1, 'bottom', width, height), distToFloor: height - 1 - bb.maxY, floorTarget: { x: cx, y: bb.maxY } });
+    considerOpening(best, { cx: 0,         cy,  edge: 'left',   quadrant: borderQuadrant(0,         cy,  'left',   width, height), distToFloor: bb.minX,              floorTarget: { x: bb.minX, y: cy } });
+    considerOpening(best, { cx: width - 1, cy,  edge: 'right',  quadrant: borderQuadrant(width - 1, cy,  'right',  width, height), distToFloor: width - 1 - bb.maxX,  floorTarget: { x: bb.maxX, y: cy } });
   }
 
   return best;
+}
+
+/** Keeps the closer-to-border candidate for each quadrant slot. */
+function considerOpening(best: (BorderOpening | null)[], o: BorderOpening): void {
+  const q = o.quadrant;
+  if (best[q] === null || o.distToFloor < best[q]!.distToFloor) { best[q] = o; }
+}
+
+/** Maps a border position to one of four quadrants (0=TL, 1=TR, 2=BL, 3=BR). */
+function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right', width: number, height: number): number {
+  switch (edge) {
+    case 'top':    return cx < width / 2  ? 0 : 1;
+    case 'bottom': return cx < width / 2  ? 2 : 3;
+    case 'left':   return cy < height / 2 ? 0 : 2;
+    case 'right':  return cy < height / 2 ? 1 : 3;
+  }
 }
 
 /**
@@ -1083,9 +1171,9 @@ function stampOpening(grid: number[][], opening: BorderOpening, value: number, w
     case 'top':
       for (let y = 1; y < height - 1; y++) {
         if (grid[y][cx - 1] === FLOOR || grid[y][cx] === FLOOR || grid[y][cx + 1] === FLOOR) { break; }
-        grid[y][cx - 1] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-        grid[y][cx]     = DEBUG;
-        grid[y][cx + 1] = DEBUG;
+        grid[y][cx - 1] = FLOOR;
+        grid[y][cx]     = FLOOR;
+        grid[y][cx + 1] = FLOOR;
       }
       grid[0][cx - 1] = value;
       grid[0][cx]     = value;
@@ -1094,9 +1182,9 @@ function stampOpening(grid: number[][], opening: BorderOpening, value: number, w
     case 'bottom':
       for (let y = height - 2; y >= 1; y--) {
         if (grid[y][cx - 1] === FLOOR || grid[y][cx] === FLOOR || grid[y][cx + 1] === FLOOR) { break; }
-        grid[y][cx - 1] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-        grid[y][cx]     = DEBUG;
-        grid[y][cx + 1] = DEBUG;
+        grid[y][cx - 1] = FLOOR;
+        grid[y][cx]     = FLOOR;
+        grid[y][cx + 1] = FLOOR;
       }
       grid[height - 1][cx - 1] = value;
       grid[height - 1][cx]     = value;
@@ -1105,9 +1193,9 @@ function stampOpening(grid: number[][], opening: BorderOpening, value: number, w
     case 'left':
       for (let x = 1; x < width - 1; x++) {
         if (grid[cy - 1][x] === FLOOR || grid[cy][x] === FLOOR || grid[cy + 1][x] === FLOOR) { break; }
-        grid[cy - 1][x] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-        grid[cy][x]     = DEBUG;
-        grid[cy + 1][x] = DEBUG;
+        grid[cy - 1][x] = FLOOR;
+        grid[cy][x]     = FLOOR;
+        grid[cy + 1][x] = FLOOR;
       }
       grid[cy - 1][0] = value;
       grid[cy][0]     = value;
@@ -1116,46 +1204,13 @@ function stampOpening(grid: number[][], opening: BorderOpening, value: number, w
     case 'right':
       for (let x = width - 2; x >= 1; x--) {
         if (grid[cy - 1][x] === FLOOR || grid[cy][x] === FLOOR || grid[cy + 1][x] === FLOOR) { break; }
-        grid[cy - 1][x] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-        grid[cy][x]     = DEBUG;
-        grid[cy + 1][x] = DEBUG;
+        grid[cy - 1][x] = FLOOR;
+        grid[cy][x]     = FLOOR;
+        grid[cy + 1][x] = FLOOR;
       }
       grid[cy - 1][width - 1] = value;
       grid[cy][width - 1]     = value;
       grid[cy + 1][width - 1] = value;
       break;
-  }
-}
-
-/** Carves a 3-tile-wide vertical corridor strip from y=yStart to y=yEnd at column cx. */
-// TODO: REVERT — change DEBUG back to FLOOR in carveVerticalCorridor
-function carveVerticalCorridor(grid: number[][], cx: number, yStart: number, yEnd: number): void {
-  for (let y = yStart; y <= yEnd; y++) {
-    grid[y][cx - 1] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-    grid[y][cx]     = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-    grid[y][cx + 1] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-  }
-}
-
-/** Carves a 3-tile-wide horizontal corridor strip from x=xStart to x=xEnd at row cy. */
-// TODO: REVERT — change DEBUG back to FLOOR in carveHorizontalCorridor
-function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, xEnd: number): void {
-  for (let x = xStart; x <= xEnd; x++) {
-    grid[cy - 1][x] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-    grid[cy][x]     = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-    grid[cy + 1][x] = DEBUG; // TODO: REVERT — change DEBUG back to FLOOR
-  }
-}
-
-function openingDistance(a: BorderOpening, b: BorderOpening): number {
-  return Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2);
-}
-
-function borderQuadrant(cx: number, cy: number, edge: 'top' | 'bottom' | 'left' | 'right', width: number, height: number): number {
-  switch (edge) {
-    case 'top':    return cx < width / 2  ? 0 : 1;
-    case 'bottom': return cx < width / 2  ? 2 : 3;
-    case 'left':   return cy < height / 2 ? 0 : 2;
-    case 'right':  return cy < height / 2 ? 1 : 3;
   }
 }
