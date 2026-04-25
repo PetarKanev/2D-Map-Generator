@@ -1,7 +1,12 @@
 {
   "name": "2d-map-generator",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "author": "Petar V. Kanev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PetarKanev/2D-Map-Generator"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
