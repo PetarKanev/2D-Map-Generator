@@ -7,8 +7,8 @@ const EXIT = 3;
 //const DEBUG = 4;
 
 // Dungeon generation parameters
-const MIN_ROOM_RADIUS = 8;  // minimum half-extent of any room (produces an 17×17 tile room)
-const MAX_ROOM_RADIUS = 20; // maximum half-extent of any room (produces an 41×41 tile room)
+const MIN_ROOM_RADIUS = 3;  // minimum half-extent of any room (produces a 7×7 tile square room)
+const MAX_ROOM_RADIUS = 15; // maximum half-extent of any room (produces a 31×31 tile square room)
 const BORDER = 5;           // minimum tiles between any room edge and the map boundary
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ interface Room {
 export interface Corridor {
   from: Coord;   // exit point on the departing room's wall
   to: Coord;     // entry point on the arriving room's wall
-  width: number; // tile width of the carved passage (2 or 3)
+  width: number; // tile width of the carved passage (1, 2, or 3)
 }
 
 /** A candidate entrance/exit opening on the map border, associated with the nearest room. */
@@ -149,7 +149,7 @@ export function generateDungeonGrid(
  * so rooms cannot bulge past the established boundary.
  */
 function placeRooms(grid: number[][], width: number, height: number): Room[] {
-  const ATTACH_GAP  = 5; // wall tiles between room floor edges — must be ≥ 5 so the gap is ≥ 4 tiles wide, giving a 3-wide corridor room to cross without touching either room face
+  const ATTACH_GAP  = 5; // wall tiles between room floor edges — must be ≥ 5 so even the widest (3-tile) corridor has room to cross without touching either room face
   const targetCount = Math.max(6, Math.floor((width * height) / 700));
   const rooms: Room[] = [];
 
@@ -559,7 +559,7 @@ function scanOutward(mid: number, min: number, max: number): number[] {
   return out;
 }
 
-/** True if every tile of a horizontal 3-wide strip at row y spanning [x1..x2] has a clear footprint. */
+/** True if every tile along row y from x1 to x2 has a clear 3×3 footprint. */
 function horizontalStripClear(mask: boolean[][], y: number, x1: number, x2: number): boolean {
   for (let x = x1; x <= x2; x++) {
     if (!footprintClear(mask, x, y)) { return false; }
@@ -567,7 +567,7 @@ function horizontalStripClear(mask: boolean[][], y: number, x1: number, x2: numb
   return true;
 }
 
-/** True if every tile of a vertical 3-wide strip at column x spanning [y1..y2] has a clear footprint. */
+/** True if every tile along column x from y1 to y2 has a clear 3×3 footprint. */
 function verticalStripClear(mask: boolean[][], x: number, y1: number, y2: number): boolean {
   for (let y = y1; y <= y2; y++) {
     if (!footprintClear(mask, x, y)) { return false; }
@@ -616,21 +616,28 @@ function findFaceEntry(room: Room, toward: Room, mask: boolean[][], width: numbe
   return null;
 }
 
-/** Carves a 3-tile-wide vertical corridor strip from y=yStart to y=yEnd at column cx. */
-function carveVerticalCorridor(grid: number[][], cx: number, yStart: number, yEnd: number): void {
+/** Maps a room radius to a corridor width: small→1, medium→2, large→3. */
+function corridorWidthForRadius(radius: number): number {
+  if (radius <= 7)  { return 1; }
+  if (radius <= 11) { return 2; }
+  return 3;
+}
+
+/** Carves a w-tile-wide vertical corridor strip from y=yStart to y=yEnd at column cx. */
+function carveVerticalCorridor(grid: number[][], cx: number, yStart: number, yEnd: number, w: number): void {
+  const loOff = w === 3 ? 1 : 0;
+  const hiOff = w >= 2  ? 1 : 0;
   for (let y = yStart; y <= yEnd; y++) {
-    grid[y][cx - 1] = FLOOR;
-    grid[y][cx]     = FLOOR;
-    grid[y][cx + 1] = FLOOR;
+    for (let dx = -loOff; dx <= hiOff; dx++) { grid[y][cx + dx] = FLOOR; }
   }
 }
 
-/** Carves a 3-tile-wide horizontal corridor strip from x=xStart to x=xEnd at row cy. */
-function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, xEnd: number): void {
+/** Carves a w-tile-wide horizontal corridor strip from x=xStart to x=xEnd at row cy. */
+function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, xEnd: number, w: number): void {
+  const loOff = w === 3 ? 1 : 0;
+  const hiOff = w >= 2  ? 1 : 0;
   for (let x = xStart; x <= xEnd; x++) {
-    grid[cy - 1][x] = FLOOR;
-    grid[cy][x]     = FLOOR;
-    grid[cy + 1][x] = FLOOR;
+    for (let dy = -loOff; dy <= hiOff; dy++) { grid[cy + dy][x] = FLOOR; }
   }
 }
 
@@ -650,11 +657,12 @@ function carveHorizontalCorridor(grid: number[][], cy: number, xStart: number, x
  *
  * BFS uses a head-index rather than Array.shift() to avoid O(n) dequeues.
  * The path is reconstructed via `parent` and carved by stamping a 3×3
- * footprint at every cell — overlapping squares union into a continuous
- * 3-wide passage. Returns null if no valid route exists.
+ * footprint at every cell regardless of `w` — the 3×3 stamp is required to
+ * break through the wall ring at the entry/exit tiles. Returns null if no
+ * valid route exists.
  */
 function bfsCorridor(
-  grid: number[][], mask: boolean[][], from: Room, to: Room, width: number, height: number
+  grid: number[][], mask: boolean[][], from: Room, to: Room, width: number, height: number, w: number
 ): Corridor | null {
   // Use outer wall face tiles (bbox + 1) as start and goal so the BFS path
   // never travels through room interiors, avoiding corner-chewing artefacts.
@@ -700,12 +708,13 @@ function bfsCorridor(
   if (!found) { return null; }
 
   // Walk the parent chain from goal back to start and stamp a 3×3 footprint
-  // at each cell — the overlapping squares union into a clean 3-wide passage
-  // that rounds any corners without leaving wall slivers.
+  // at each cell — always 3×3 so the stamps at the start/goal cells carve
+  // through the wall ring (bbox+1) into the room floor at bbox.
+  const halfW = 1;
   let cur: Coord | null = goal;
   while (cur) {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -halfW; dy <= halfW; dy++) {
+      for (let dx = -halfW; dx <= halfW; dx++) {
         const nx = cur.x + dx, ny = cur.y + dy;
         if (nx >= 0 && ny >= 0 && nx < width && ny < height) {
           grid[ny][nx] = FLOOR;
@@ -715,7 +724,7 @@ function bfsCorridor(
     cur = parent[cur.y][cur.x];
   }
 
-  return { from: start, to: goal, width: 3 };
+  return { from: start, to: goal, width: w };
 }
 
 /**
@@ -733,6 +742,10 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
   const dx = to.cx - from.cx;
   const dy = to.cy - from.cy;
 
+  const w     = corridorWidthForRadius(Math.min(from.radius, to.radius));
+  const loOff = w === 3 ? 1 : 0;
+  const hiOff = w >= 2  ? 1 : 0;
+
   // Offset based on direction in order to fix gaps in the corridors
   let offsetYLeft = 0;
   let offsetYRight = 0;
@@ -749,12 +762,12 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
     const rightFace = getRoomFace(rightRoom, 'left');
     const x1 = leftFace.faceCoord;
     const x2 = rightFace.faceCoord;
-    if (x1 >= x2) { return bfsCorridor(grid, mask, from, to, width, height); }
+    if (x1 >= x2) { return bfsCorridor(grid, mask, from, to, width, height, w); }
 
-    // Safe y-range: intersection of both rooms' actual exit face coverage (±1 inset so
-    // 3-wide corridor centre±1 stays within floor at both faces).
-    const safeMin = Math.max(leftFace.coverMin + 1, rightFace.coverMin + 1);
-    const safeMax = Math.min(leftFace.coverMax - 1, rightFace.coverMax - 1);
+    // Safe y-range: intersection of both rooms' actual exit face coverage, inset so the
+    // corridor's full w-tile extent stays within floor at both faces.
+    const safeMin = Math.max(leftFace.coverMin + loOff, rightFace.coverMin + loOff);
+    const safeMax = Math.min(leftFace.coverMax - hiOff, rightFace.coverMax - hiOff);
 
     // Corridor carves start/end 1 tile outside room floor edge so room tiles stay unmodified.
     const cx1 = x1 + 1; // first tile in the gap (just outside left room's right face)
@@ -765,8 +778,8 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       const mid = Math.round((safeMin + safeMax) / 2);
       for (const corY of scanOutward(mid, safeMin, safeMax)) {
         if (horizontalStripClear(mask, corY, cx1, cx2)) {
-          carveHorizontalCorridor(grid, corY, cx1, cx2);
-          return { from: { x: x1, y: corY }, to: { x: x2, y: corY }, width: 3 };
+          carveHorizontalCorridor(grid, corY, cx1, cx2, w);
+          return { from: { x: x1, y: corY }, to: { x: x2, y: corY }, width: w };
         }
       }
     }
@@ -777,37 +790,40 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
     const zMin    = Math.min(leftCy, rightCy);
     const zMax    = Math.max(leftCy, rightCy);
 
-    // Offset calc
-    if((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
-      offsetYLeft = leftCy + 1;
+    // Offset calc — w=1 uses face centre directly; wider corridors offset by ±1 so the
+    // wider carving spans the face floor tile at both stubs.
+    if (w === 1) {
+      offsetYLeft  = leftCy;
+      offsetYRight = rightCy;
+    } else if ((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
+      offsetYLeft  = leftCy  + 1;
       offsetYRight = rightCy - 1;
     } else {
-      offsetYLeft = leftCy - 1;
+      offsetYLeft  = leftCy  - 1;
       offsetYRight = rightCy + 1;
     }
 
     // If the offset row has no room floor at either face tile the arms would be
     // disconnected — fall through immediately to BFS rather than carving a stub.
     if (grid[offsetYLeft][x1] !== FLOOR || grid[offsetYRight][x2] !== FLOOR) {
-      return bfsCorridor(grid, mask, from, to, width, height);
+      return bfsCorridor(grid, mask, from, to, width, height, w);
     }
 
-    // gapMid range starts at cx1+2/ends at cx2-2 so the 3-wide vertical connector
-    // (gapMid-1..gapMid+1) stays ≥1 wall tile away from each room face (1-tile wall rule).
+    // gapMid range keeps the w-wide vertical connector ≥1 wall tile away from each room face.
     const midX    = Math.round((cx1 + cx2) / 2);
-    for (const gapMid of scanOutward(midX, cx1 + 2, cx2 - 2)) {
+    for (const gapMid of scanOutward(midX, cx1 + 1 + loOff, cx2 - 1 - hiOff)) {
       if (horizontalStripClear(mask, leftCy, cx1, gapMid) &&
           verticalStripClear(mask, gapMid, zMin, zMax) &&
           horizontalStripClear(mask, rightCy, gapMid, cx2)) {
-        carveHorizontalCorridor(grid, offsetYLeft,  cx1,    gapMid);
-        carveVerticalCorridor  (grid, gapMid,  zMin,   zMax);
-        carveHorizontalCorridor(grid, offsetYRight, gapMid, cx2);
-        return { from: { x: x1, y: leftCy }, to: { x: x2, y: rightCy }, width: 3 };
+        carveHorizontalCorridor(grid, offsetYLeft,  cx1,    gapMid, w);
+        carveVerticalCorridor  (grid, gapMid,        zMin,   zMax,   w);
+        carveHorizontalCorridor(grid, offsetYRight, gapMid, cx2,    w);
+        return { from: { x: x1, y: leftCy }, to: { x: x2, y: rightCy }, width: w };
       }
     }
 
     // Strategy 3 — BFS fallback.
-    return bfsCorridor(grid, mask, from, to, width, height);
+    return bfsCorridor(grid, mask, from, to, width, height, w);
 
   } else {
     // ── Vertical primary: rooms are above and below ──────────────────────────
@@ -819,11 +835,11 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
     const bottomFace = getRoomFace(bottomRoom, 'top');
     const y1 = topFace.faceCoord;
     const y2 = bottomFace.faceCoord;
-    if (y1 >= y2) { return bfsCorridor(grid, mask, from, to, width, height); }
+    if (y1 >= y2) { return bfsCorridor(grid, mask, from, to, width, height, w); }
 
-    // Safe x-range: intersection of both rooms' actual exit face coverage.
-    const safeMin = Math.max(topFace.coverMin + 1, bottomFace.coverMin + 1);
-    const safeMax = Math.min(topFace.coverMax - 1, bottomFace.coverMax - 1);
+    // Safe x-range: intersection of both rooms' actual exit face coverage, inset by w extent.
+    const safeMin = Math.max(topFace.coverMin + loOff, bottomFace.coverMin + loOff);
+    const safeMax = Math.min(topFace.coverMax - hiOff, bottomFace.coverMax - hiOff);
 
     // Corridor carves start/end 1 tile outside room floor edge so room tiles stay unmodified.
     const cy1 = y1 + 1; // first tile in the gap (just outside top room's bottom face)
@@ -834,8 +850,8 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
       const mid = Math.round((safeMin + safeMax) / 2);
       for (const corX of scanOutward(mid, safeMin, safeMax)) {
         if (verticalStripClear(mask, corX, cy1, cy2)) {
-          carveVerticalCorridor(grid, corX, cy1, cy2);
-          return { from: { x: corX, y: y1 }, to: { x: corX, y: y2 }, width: 3 };
+          carveVerticalCorridor(grid, corX, cy1, cy2, w);
+          return { from: { x: corX, y: y1 }, to: { x: corX, y: y2 }, width: w };
         }
       }
     }
@@ -846,37 +862,39 @@ function carveRoomCorridor(grid: number[][], from: Room, to: Room, rooms: Room[]
     const zMin     = Math.min(topCx, bottomCx);
     const zMax     = Math.max(topCx, bottomCx);
 
-    // Offset calc
-    if((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
-      offsetXTop = topCx + 1;
+    // Offset calc — w=1 uses face centre directly; wider corridors offset by ±1.
+    if (w === 1) {
+      offsetXTop    = topCx;
+      offsetXBottom = bottomCx;
+    } else if ((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
+      offsetXTop    = topCx    + 1;
       offsetXBottom = bottomCx - 1;
     } else {
-      offsetXTop = topCx - 1;
+      offsetXTop    = topCx    - 1;
       offsetXBottom = bottomCx + 1;
     }
 
     // If the offset column has no room floor at either face tile the arms would be
     // disconnected — fall through immediately to BFS rather than carving a stub.
     if (grid[y1][offsetXTop] !== FLOOR || grid[y2][offsetXBottom] !== FLOOR) {
-      return bfsCorridor(grid, mask, from, to, width, height);
+      return bfsCorridor(grid, mask, from, to, width, height, w);
     }
 
-    // gapMid range starts at cy1+2/ends at cy2-2 so the 3-wide horizontal connector
-    // (gapMid-1..gapMid+1) stays ≥1 wall tile away from each room face (1-tile wall rule).
+    // gapMid range keeps the w-wide horizontal connector ≥1 wall tile away from each room face.
     const midY     = Math.round((cy1 + cy2) / 2);
-    for (const gapMid of scanOutward(midY, cy1 + 2, cy2 - 2)) {
+    for (const gapMid of scanOutward(midY, cy1 + 1 + loOff, cy2 - 1 - hiOff)) {
       if (verticalStripClear(mask, topCx, cy1, gapMid) &&
           horizontalStripClear(mask, gapMid, zMin, zMax) &&
           verticalStripClear(mask, bottomCx, gapMid, cy2)) {
-        carveVerticalCorridor  (grid, offsetXTop,    cy1,    gapMid);
-        carveHorizontalCorridor(grid, gapMid,   zMin,   zMax);
-        carveVerticalCorridor  (grid, offsetXBottom, gapMid, cy2);
-        return { from: { x: topCx, y: y1 }, to: { x: bottomCx, y: y2 }, width: 3 };
+        carveVerticalCorridor  (grid, offsetXTop,    cy1,    gapMid, w);
+        carveHorizontalCorridor(grid, gapMid,         zMin,   zMax,   w);
+        carveVerticalCorridor  (grid, offsetXBottom, gapMid, cy2,    w);
+        return { from: { x: topCx, y: y1 }, to: { x: bottomCx, y: y2 }, width: w };
       }
     }
 
     // Strategy 3 — BFS fallback.
-    return bfsCorridor(grid, mask, from, to, width, height);
+    return bfsCorridor(grid, mask, from, to, width, height, w);
   }
 }
 

@@ -71,6 +71,54 @@
 #pixi-container {
   width: 100%;
   height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#pixi-container canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+
+#hd-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#hd-modal-img {
+  max-width: 100vw;
+  max-height: 100vh;
+  object-fit: contain;
+  display: block;
+  cursor: grab;
+  user-select: none;
+  transform-origin: center center;
+}
+
+#hd-modal-img:active {
+  cursor: grabbing;
+}
+
+#hd-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.5rem;
+  cursor: pointer;
+  z-index: 1001;
 }
 
 #app-version a {

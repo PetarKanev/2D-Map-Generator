@@ -4,7 +4,10 @@ import { Application, Graphics } from 'pixi.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-export const CELL_SIZE = 5; // pixels per grid tile
+export const CELL_SIZE     = 8;    // pixels per grid tile (cave renderer)
+export const blockSize     = 8;    // pixels per tilemap tile (dungeon renderer)
+export const OUTPUT_WIDTH  = 1920; // generated canvas pixel width
+export const OUTPUT_HEIGHT = 1080; // generated canvas pixel height
 
 // ---------------------------------------------------------------------------
 // State
@@ -15,6 +18,15 @@ let pixiApp: Application | null = null; // single persistent PixiJS instance
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
+
+export interface Tile {
+  traversable: boolean; // true = FLOOR/ENTRANCE/EXIT, false = WALL
+}
+
+export interface PaintTilemapOptions {
+  floorColor: number;
+  wallColor: number;
+}
 
 export interface PaintOptions {
   floorColor: number;
@@ -66,6 +78,15 @@ export function computeWallDepth(grid: number[][]): number[][] {
 }
 
 // ---------------------------------------------------------------------------
+// Tilemap
+// ---------------------------------------------------------------------------
+
+/** Converts a dungeon grid to a Tile[][] with 1:1 cell mapping. */
+export function generateTilemap(grid: number[][]): Tile[][] {
+  return grid.map(row => row.map(cell => ({ traversable: cell !== 1 })));
+}
+
+// ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 
@@ -79,8 +100,14 @@ export async function ensurePixiApp(container: HTMLDivElement, width: number, he
       backgroundColor: 0x000000,
       antialias: false,
       preference: 'webgl',
+      preserveDrawingBuffer: true,
     });
     container.appendChild(pixiApp.canvas);
+    pixiApp.canvas.style.maxWidth  = '100%';
+    pixiApp.canvas.style.maxHeight = '100%';
+    pixiApp.canvas.style.width     = 'auto';
+    pixiApp.canvas.style.height    = 'auto';
+    pixiApp.canvas.style.display   = 'block';
   } else {
     pixiApp.renderer.resize(width, height);
     pixiApp.stage.removeChildren();
@@ -145,4 +172,75 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
   graphics.fill(0xff0000);
 
   pixiApp!.stage.addChild(graphics);
+}
+
+/** Renders a Tile[][] as a tilemap: traversable tiles get a fill + 1px inset border; walls get a solid fill. */
+export function paintTilemap(tilemap: Tile[][], grid: number[][], options: PaintTilemapOptions): void {
+  const graphics = new Graphics();
+  const bs = blockSize;
+  const inset = 0.5;
+  const borderStyle = { width: 1, color: 0x8A8B8F, alignment: 1 };
+
+  // Walls — solid, no border
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] === 1) { graphics.rect(x * bs, y * bs, bs, bs); }
+    }
+  }
+  graphics.fill(options.wallColor);
+
+  // Floor — fill then inset border
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] === 0) { graphics.rect(x * bs, y * bs, bs, bs); }
+    }
+  }
+  graphics.fill(options.floorColor);
+  for (let y = 0; y < tilemap.length; y++) {
+    for (let x = 0; x < tilemap[y].length; x++) {
+      if (tilemap[y][x].traversable && grid[y][x] === 0) {
+        graphics.rect(x * bs + inset, y * bs + inset, bs - inset * 2, bs - inset * 2);
+      }
+    }
+  }
+  graphics.stroke(borderStyle);
+
+  // Entrance — green + inset border
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] === 2) { graphics.rect(x * bs, y * bs, bs, bs); }
+    }
+  }
+  graphics.fill(0x00ff00);
+  for (let y = 0; y < tilemap.length; y++) {
+    for (let x = 0; x < tilemap[y].length; x++) {
+      if (grid[y][x] === 2) {
+        graphics.rect(x * bs + inset, y * bs + inset, bs - inset * 2, bs - inset * 2);
+      }
+    }
+  }
+  graphics.stroke(borderStyle);
+
+  // Exit — red + inset border
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] === 3) { graphics.rect(x * bs, y * bs, bs, bs); }
+    }
+  }
+  graphics.fill(0xff0000);
+  for (let y = 0; y < tilemap.length; y++) {
+    for (let x = 0; x < tilemap[y].length; x++) {
+      if (grid[y][x] === 3) {
+        graphics.rect(x * bs + inset, y * bs + inset, bs - inset * 2, bs - inset * 2);
+      }
+    }
+  }
+  graphics.stroke(borderStyle);
+
+  pixiApp!.stage.addChild(graphics);
+}
+
+/** Returns a PNG data URL of the current canvas, or null if no canvas exists yet. */
+export function getCanvasDataURL(): string | null {
+  return pixiApp?.canvas.toDataURL('image/png') ?? null;
 }

@@ -1,7 +1,9 @@
 import { useState, useRef } from 'react'
 import { pseudoRandom } from './utils/PseudoRandom'
 import { GenerateMap } from './rendering/GenerateMap'
+import { getCanvasDataURL } from './rendering/PixiRenderer'
 import { SimpleSelect } from './components/SimpleSelect'
+import { HdModal } from './components/HdModal'
 import { version, repository } from '../package.json'
 
 import type { MapMetadata } from './rendering/GenerateMap'
@@ -13,9 +15,8 @@ import './App.css'
 // ---------------------------------------------------------------------------
 
 const mapTypes = [ // available generator options shown in the map-type dropdown
-  { label: 'Cave -- WIP', value: 'Cave', disabled: false },
-  { label: 'Dungeon -- WIP', value: 'Dungeon', disabled: false },
-  { label: 'Island -- WIP', value: 'Island', disabled: true  }
+  { label: 'Cave', value: 'Cave', disabled: false },
+  { label: 'Dungeon', value: 'Dungeon', disabled: false }
 ];
 
 // ---------------------------------------------------------------------------
@@ -39,12 +40,15 @@ function App() {
   const [selectedMapType, setSelectedMapType] = useState<string | null>(mapTypes[0].value)
   const [metadata, setMetadata] = useState<MapMetadata | null>(null)
   const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
+  const [useTilemap, setUseTilemap] = useState<boolean>(false)
+  const [hdPreviewSrc, setHdPreviewSrc] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
   // Refs 
   // Track the last-used config so re-generating with identical settings still produces a new map by passing null (random) to pseudoRandom.
   const lastUsedSeed = useRef<number | null>(null)
   const lastUsedPreferDiagonal = useRef<boolean>(true)
+  const lastUsedUseTilemap = useRef<boolean>(false)
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -62,7 +66,7 @@ function App() {
    * overlay can render before the heavy generation work begins.
    */
   async function handleGenerate() {
-    const configUnchanged = seed === lastUsedSeed.current && preferDiagonal === lastUsedPreferDiagonal.current;
+    const configUnchanged = seed === lastUsedSeed.current && preferDiagonal === lastUsedPreferDiagonal.current && useTilemap === lastUsedUseTilemap.current;
     const [newMapID, mapSeed] = pseudoRandom(configUnchanged ? null : seed);
 
     setMapID(newMapID);
@@ -70,11 +74,12 @@ function App() {
     setIsLoading(true);
 
     await new Promise(resolve => setTimeout(resolve, 0));
-    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal));
+    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal, useTilemap));
     setIsLoading(false);
 
     lastUsedSeed.current = mapSeed;
     lastUsedPreferDiagonal.current = preferDiagonal;
+    lastUsedUseTilemap.current = useTilemap;
   }
 
   return (
@@ -94,6 +99,9 @@ function App() {
         <div>
           Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />
         </div>
+        <div>
+          Tilemap: <input type="checkbox" checked={useTilemap} onChange={(e) => setUseTilemap(e.target.checked)} />
+        </div>
         <button onClick={handleGenerate}>Generate</button>
         {metadata && (
           <div id="metadata">
@@ -109,8 +117,14 @@ function App() {
       </div>
       <div id="right-panel">
         {isLoading && <div id="loading-overlay">Generating</div>}
-        <div ref={setPixiContainer} id="pixi-container" />
+        <div
+          ref={setPixiContainer}
+          id="pixi-container"
+          onClick={() => { const src = getCanvasDataURL(); if (src) { setHdPreviewSrc(src); } }}
+          style={{ cursor: metadata ? 'zoom-in' : 'default' }}
+        />
       </div>
+      {hdPreviewSrc && <HdModal src={hdPreviewSrc} onClose={() => setHdPreviewSrc(null)} />}
     </div>
   )
 }
