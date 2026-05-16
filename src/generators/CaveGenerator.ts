@@ -98,10 +98,12 @@ export function generateCaveGrid(seed: number, width: number, height: number, pr
     grid[y][GRID_WIDTH - 1] = WALL;
   }
 
-  placeEntranceAndExit(grid, preferDiagonal);
-
-  // Max 100 iterations of rogue tile removal to clean up any remaining 1-tile holes or protrusions.
+  // Rogue tile removal runs before entrance/exit placement so the 1-cell-wide
+  // border corridors carved by stampOpening are not immediately erased (a 1-cell
+  // corridor has ≥5 wall neighbours and would be converted back to wall).
   const rogueIterations = removeRogueTiles(grid, 100);
+
+  placeEntranceAndExit(grid, preferDiagonal);
 
   const floorCells = grid.flat().filter(v => v === FLOOR || v === ENTRANCE || v === EXIT).length;
   const floorPercent = Math.round((floorCells / (GRID_WIDTH * GRID_HEIGHT)) * 100);
