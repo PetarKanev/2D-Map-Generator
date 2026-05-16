@@ -120,6 +120,7 @@ export function HdModal({ src, onClose }: HdModalProps) {
 
   /** Applies single-finger pan or two-finger pinch-zoom on each touch move. */
   function handleTouchMove(e: TouchEvent) {
+    if ((e.target as HTMLElement).id === 'hd-modal-close') { return; }
     e.preventDefault();
     if (e.touches.length === 1 && lastSingleTouch.current) {
       // Single-finger pan: apply delta from previous touch position.
@@ -155,6 +156,7 @@ export function HdModal({ src, onClose }: HdModalProps) {
 
   /** Clears touch tracking on finger lift; re-anchors pan when transitioning from pinch. */
   function handleTouchEnd(e: TouchEvent) {
+    if ((e.target as HTMLElement).id === 'hd-modal-close') { return; }
     e.preventDefault();
     if (e.touches.length === 0) {
       // All fingers lifted: clear both tracking refs.
