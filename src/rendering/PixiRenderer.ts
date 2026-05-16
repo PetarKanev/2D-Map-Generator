@@ -6,8 +6,8 @@ import { Application, Graphics } from 'pixi.js';
 
 export const CELL_SIZE     = 8;    // pixels per grid tile (cave renderer)
 export const blockSize     = 8;    // pixels per tilemap tile (dungeon renderer)
-export const OUTPUT_WIDTH  = 1920; // generated canvas pixel width
-export const OUTPUT_HEIGHT = 1080; // generated canvas pixel height
+export const OUTPUT_WIDTH  = 3840; // generated canvas pixel width
+export const OUTPUT_HEIGHT = 2160; // generated canvas pixel height
 
 // ---------------------------------------------------------------------------
 // State

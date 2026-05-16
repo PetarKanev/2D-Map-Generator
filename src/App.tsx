@@ -27,10 +27,10 @@ interface MapSizeOption extends SelectOption {
 
 // Maps size label to cell size in pixels; canvas stays 1920×1080 throughout.
 const mapSizes: MapSizeOption[] = [
-  { label: 'Small',      value: 'Small',      cellSize: 24 },
-  { label: 'Medium',     value: 'Medium',     cellSize: 20 },
-  { label: 'Large',      value: 'Large',      cellSize: 12 },
-  { label: 'Very Large', value: 'Very Large', cellSize: 8  },
+  { label: 'Small',      value: 'Small',      cellSize: 48 },
+  { label: 'Medium',     value: 'Medium',     cellSize: 40 },
+  { label: 'Large',      value: 'Large',      cellSize: 24 },
+  { label: 'Very Large', value: 'Very Large', cellSize: 16 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ function formatTime(ms: number): string {
 
 /** Returns the pixel cell size for the given map size value, defaulting to Very Large (8). */
 function getCellSize(mapSize: string | null): number {
-  return mapSizes.find(s => s.value === mapSize)?.cellSize ?? 8;
+  return mapSizes.find(s => s.value === mapSize)?.cellSize ?? 16;
 }
 
 // ---------------------------------------------------------------------------

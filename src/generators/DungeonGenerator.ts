@@ -355,7 +355,7 @@ function getRoomBounds(r: Room): { minX: number; maxX: number; minY: number; max
 
 /** Returns true if the two rooms' full AABBs (Axis-Aligned Bounding Boxes) overlap when each is expanded by the buffer gap. */
 function roomsOverlap(a: Room, b: Room): boolean {
-  const gap = 2;
+  const gap = 1;
   const ab = getRoomBounds(a), bb = getRoomBounds(b);
   return ab.minX - gap <= bb.maxX && ab.maxX + gap >= bb.minX &&
          ab.minY - gap <= bb.maxY && ab.maxY + gap >= bb.minY;
