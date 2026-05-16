@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
 /**
  * Returns a deterministic pseudo-random unsigned 32-bit integer for a given seed.
  * Same seed always produces the same output. If seed is null, a random seed
@@ -50,6 +54,10 @@ export function pseudoRandom(seed: number | null): [number, number] {
   // Cast to unsigned 32-bit integer (0–4,294,967,295).
   return [h >>> 0, seed];
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /** Rotates x left by r bits within a 32-bit integer.
  *  Unlike a shift, rotation loses no bits — they wrap around to the right side. */

@@ -1,3 +1,7 @@
+/* ---------------------------------------------------------------------------
+   CSS Variables
+   --------------------------------------------------------------------------- */
+
 :root {
   --text: #6b6375;
   --text-h: #08060d;
@@ -30,6 +34,10 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Theme
+   --------------------------------------------------------------------------- */
+
 /* Apply dark palette for both explicit dark mode and light mode browsers —
    this app always renders dark regardless of system preference. */
 @media (prefers-color-scheme: dark), (prefers-color-scheme: light) {
@@ -47,6 +55,10 @@
       rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Root & Global
+   --------------------------------------------------------------------------- */
 
 #root {
   width: 1126px;
@@ -67,4 +79,17 @@ body {
 input, select, button {
   color: #000;
   background: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive — Mobile (≤768px)
+   --------------------------------------------------------------------------- */
+
+/* Mobile: remove the decorative side border that causes a horizontal scrollbar
+   on narrow viewports where max-width: 100% kicks in. */
+@media (max-width: 768px) {
+  #root {
+    width: 100%;
+    border-inline: none;
+  }
 }

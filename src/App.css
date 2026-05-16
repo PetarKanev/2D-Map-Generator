@@ -1,3 +1,7 @@
+/* ---------------------------------------------------------------------------
+   Layout
+   --------------------------------------------------------------------------- */
+
 #app-container {
   width: 100%;
   height: 100vh;
@@ -16,6 +20,17 @@
   gap: 8px;
   padding: 8px;
 }
+
+#right-panel {
+  position: relative;
+  background-color: black;
+  width: 80%;
+  height: 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   Left Panel — Controls
+   --------------------------------------------------------------------------- */
 
 #metadata {
   display: flex;
@@ -37,12 +52,9 @@
   flex-wrap: nowrap;
 }
 
-#right-panel {
-  position: relative;
-  background-color: black;
-  width: 80%;
-  height: 100%;
-}
+/* ---------------------------------------------------------------------------
+   Canvas
+   --------------------------------------------------------------------------- */
 
 #loading-overlay {
   position: absolute;
@@ -85,6 +97,10 @@
   height: auto;
 }
 
+/* ---------------------------------------------------------------------------
+   HD Modal
+   --------------------------------------------------------------------------- */
+
 #hd-modal-overlay {
   position: fixed;
   inset: 0;
@@ -121,6 +137,10 @@
   z-index: 1001;
 }
 
+/* ---------------------------------------------------------------------------
+   Misc
+   --------------------------------------------------------------------------- */
+
 #app-version a {
   color: inherit;
   text-decoration: none;
@@ -130,4 +150,126 @@
 #app-version a:hover {
   opacity: 1;
   text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive — Tablet (769px – 1024px)
+   --------------------------------------------------------------------------- */
+
+/* Tablet: narrow sidebar to fixed width so canvas gets more space. */
+@media (min-width: 769px) and (max-width: 1024px) {
+  #left-panel {
+    width: 180px;
+    min-width: 180px;
+    flex-shrink: 0;
+  }
+
+  /* Let right panel absorb the remaining space left by fixed-width sidebar. */
+  #right-panel {
+    width: auto;
+    flex: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive — Mobile (≤768px)
+   --------------------------------------------------------------------------- */
+
+/* Mobile: stack controls above canvas instead of side-by-side. */
+@media (max-width: 768px) {
+  #app-container {
+    flex-direction: column;
+    /* 100svh (small viewport height) excludes the browser's collapsing address
+       bar, preventing the bottom of the layout being cut off on iOS/Android. */
+    height: 100svh;
+    max-height: 100svh;
+    overflow: visible;
+  }
+
+  /* Controls become a horizontal wrapping row across the top. */
+  #left-panel {
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;  /* scroll if controls overflow rather than pushing canvas down */
+    flex-shrink: 0;
+  }
+
+  /* Canvas panel fills all remaining vertical space below the controls row. */
+  #right-panel {
+    width: 100%;
+    flex: 1;
+    /* Without min-height: 0, flex children won't shrink below their
+       intrinsic content size, causing the canvas to overflow the viewport. */
+    min-height: 0;
+  }
+
+  /* Ensure each label+control row has a 44px minimum touch target height. */
+  #map-type-row,
+  #diagonal-row,
+  #tilemap-row {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    gap: 6px;
+  }
+
+  /* 44px touch targets on form elements; 16px prevents iOS Safari from
+     zooming the viewport when an input is focused. */
+  #left-panel input[type="text"] {
+    min-height: 44px;
+    font-size: 16px;
+    padding: 0 8px;
+    box-sizing: border-box;
+  }
+
+  #left-panel select {
+    min-height: 44px;
+    font-size: 16px;
+    padding: 0 4px;
+  }
+
+  #left-panel button {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 16px;
+  }
+
+  /* Larger checkbox hit area for touch. */
+  #left-panel input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Metadata flows as a horizontal wrapping grid instead of a vertical list. */
+  #metadata {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: center;
+  }
+
+  #metadata-title {
+    width: 100%;
+    text-align: left;
+  }
+
+  /* Suppress native browser pan/pinch so JS touch handlers get all events. */
+  #hd-modal-overlay {
+    touch-action: none;
+  }
+
+  /* Expand close button to 44px touch target. */
+  #hd-modal-close {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.8rem;
+  }
 }

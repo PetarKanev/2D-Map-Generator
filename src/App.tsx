@@ -93,13 +93,13 @@ function App() {
           <label>Seed:</label>
           <input type="text" value={seed ?? ''} onChange={handleSeedChange} />
         </div>
-        <div>
+        <div id="map-type-row">
           Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
         </div>
-        <div>
+        <div id="diagonal-row">
           Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />
         </div>
-        <div>
+        <div id="tilemap-row">
           Tilemap: <input type="checkbox" checked={useTilemap} onChange={(e) => setUseTilemap(e.target.checked)} />
         </div>
         <button onClick={handleGenerate}>Generate</button>
