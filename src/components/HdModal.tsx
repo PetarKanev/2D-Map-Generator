@@ -101,6 +101,9 @@ export function HdModal({ src, onClose }: HdModalProps) {
 
   /** Records touch-start anchor for single-finger pan, or initial span for pinch-zoom. */
   function handleTouchStart(e: TouchEvent) {
+    // Let the close button's onClick fire normally — preventDefault() would
+    // suppress the synthetic click event the browser generates from the touch.
+    if ((e.target as HTMLElement).id === 'hd-modal-close') { return; }
     e.preventDefault();
     if (e.touches.length === 1) {
       // Record anchor for delta-based pan; clear pinch state.
