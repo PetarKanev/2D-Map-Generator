@@ -24,11 +24,13 @@ export interface Tile {
 }
 
 export interface PaintTilemapOptions {
+  cellSize: number;              // pixels per tilemap tile (replaces blockSize constant)
   floorColor: number;
   wallColor: number;
 }
 
 export interface PaintOptions {
+  cellSize: number;              // pixels per grid tile (replaces CELL_SIZE constant)
   floorColor: number;
   wallFlatColor?: number;        // flat wall color — used when wallDepth is not provided
   wallDepth?: number[][];        // per-tile BFS distance from nearest walkable cell
@@ -124,7 +126,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
       for (let y = 0; y < grid.length; y++) {
         for (let x = 0; x < grid[y].length; x++) {
           if (grid[y][x] === 1 && options.wallDepth[y][x] === dist) {
-            graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            graphics.rect(x * options.cellSize, y * options.cellSize, options.cellSize, options.cellSize);
           }
         }
       }
@@ -134,7 +136,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
     for (let y = 0; y < grid.length; y++) {
       for (let x = 0; x < grid[y].length; x++) {
         if (grid[y][x] === 1) {
-          graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+          graphics.rect(x * options.cellSize, y * options.cellSize, options.cellSize, options.cellSize);
         }
       }
     }
@@ -145,7 +147,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
   for (let y = 0; y < grid.length; y++) {
     for (let x = 0; x < grid[y].length; x++) {
       if (grid[y][x] === 0) {
-        graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        graphics.rect(x * options.cellSize, y * options.cellSize, options.cellSize, options.cellSize);
       }
     }
   }
@@ -155,7 +157,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
   for (let y = 0; y < grid.length; y++) {
     for (let x = 0; x < grid[y].length; x++) {
       if (grid[y][x] === 2) {
-        graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        graphics.rect(x * options.cellSize, y * options.cellSize, options.cellSize, options.cellSize);
       }
     }
   }
@@ -165,7 +167,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
   for (let y = 0; y < grid.length; y++) {
     for (let x = 0; x < grid[y].length; x++) {
       if (grid[y][x] === 3) {
-        graphics.rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        graphics.rect(x * options.cellSize, y * options.cellSize, options.cellSize, options.cellSize);
       }
     }
   }
@@ -177,7 +179,7 @@ export function paintGrid(grid: number[][], options: PaintOptions): void {
 /** Renders a Tile[][] as a tilemap: traversable tiles get a fill + 1px inset border; walls get a solid fill. */
 export function paintTilemap(tilemap: Tile[][], grid: number[][], options: PaintTilemapOptions): void {
   const graphics = new Graphics();
-  const bs = blockSize;
+  const bs = options.cellSize;
   const inset = 0.5;
   const borderStyle = { width: 1, color: 0x8A8B8F, alignment: 1 };
 

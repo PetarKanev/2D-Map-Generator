@@ -7,6 +7,7 @@ import { HdModal } from './components/HdModal'
 import { version, repository } from '../package.json'
 
 import type { MapMetadata } from './rendering/GenerateMap'
+import type { SelectOption } from './components/SimpleSelect'
 
 import './App.css'
 
@@ -19,6 +20,19 @@ const mapTypes = [ // available generator options shown in the map-type dropdown
   { label: 'Dungeon', value: 'Dungeon', disabled: false }
 ];
 
+/** Map size option — extends SelectOption with the pixel cell size for rendering. */
+interface MapSizeOption extends SelectOption {
+  cellSize: number;
+}
+
+// Maps size label to cell size in pixels; canvas stays 1920×1080 throughout.
+const mapSizes: MapSizeOption[] = [
+  { label: 'Small',      value: 'Small',      cellSize: 24 },
+  { label: 'Medium',     value: 'Medium',     cellSize: 20 },
+  { label: 'Large',      value: 'Large',      cellSize: 12 },
+  { label: 'Very Large', value: 'Very Large', cellSize: 8  },
+];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -26,6 +40,11 @@ const mapTypes = [ // available generator options shown in the map-type dropdown
 /** Formats a millisecond duration for display in the metadata panel. */
 function formatTime(ms: number): string {
   return `${ms}ms`;
+}
+
+/** Returns the pixel cell size for the given map size value, defaulting to Very Large (8). */
+function getCellSize(mapSize: string | null): number {
+  return mapSizes.find(s => s.value === mapSize)?.cellSize ?? 8;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,14 +60,16 @@ function App() {
   const [metadata, setMetadata] = useState<MapMetadata | null>(null)
   const [preferDiagonal, setPreferDiagonal] = useState<boolean>(true)
   const [useTilemap, setUseTilemap] = useState<boolean>(false)
+  const [selectedMapSize, setSelectedMapSize] = useState<string | null>('Very Large')
   const [hdPreviewSrc, setHdPreviewSrc] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  // Refs 
+  // Refs
   // Track the last-used config so re-generating with identical settings still produces a new map by passing null (random) to pseudoRandom.
   const lastUsedSeed = useRef<number | null>(null)
   const lastUsedPreferDiagonal = useRef<boolean>(true)
   const lastUsedUseTilemap = useRef<boolean>(false)
+  const lastUsedMapSize = useRef<string | null>('Very Large')
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -66,7 +87,11 @@ function App() {
    * overlay can render before the heavy generation work begins.
    */
   async function handleGenerate() {
-    const configUnchanged = seed === lastUsedSeed.current && preferDiagonal === lastUsedPreferDiagonal.current && useTilemap === lastUsedUseTilemap.current;
+    const configUnchanged =
+      seed === lastUsedSeed.current &&
+      preferDiagonal === lastUsedPreferDiagonal.current &&
+      useTilemap === lastUsedUseTilemap.current &&
+      selectedMapSize === lastUsedMapSize.current;
     const [newMapID, mapSeed] = pseudoRandom(configUnchanged ? null : seed);
 
     setMapID(newMapID);
@@ -74,12 +99,13 @@ function App() {
     setIsLoading(true);
 
     await new Promise(resolve => setTimeout(resolve, 0));
-    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal, useTilemap));
+    setMetadata(await GenerateMap(mapSeed, selectedMapType, pixiContainer, preferDiagonal, useTilemap, getCellSize(selectedMapSize)));
     setIsLoading(false);
 
     lastUsedSeed.current = mapSeed;
     lastUsedPreferDiagonal.current = preferDiagonal;
     lastUsedUseTilemap.current = useTilemap;
+    lastUsedMapSize.current = selectedMapSize;
   }
 
   return (
@@ -95,6 +121,9 @@ function App() {
         </div>
         <div id="map-type-row">
           Map Type: <SimpleSelect options={mapTypes} value={selectedMapType} onChange={setSelectedMapType} />
+        </div>
+        <div id="map-size-row">
+          Map Size: <SimpleSelect options={mapSizes} value={selectedMapSize} onChange={setSelectedMapSize} />
         </div>
         <div id="diagonal-row">
           Diagonal Entrances: <input type="checkbox" checked={preferDiagonal ?? true} onChange={(e) => setPreferDiagonal(e.target.checked)} />

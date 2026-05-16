@@ -210,6 +210,7 @@
 
   /* Ensure each label+control row has a 44px minimum touch target height. */
   #map-type-row,
+  #map-size-row,
   #diagonal-row,
   #tilemap-row {
     display: flex;

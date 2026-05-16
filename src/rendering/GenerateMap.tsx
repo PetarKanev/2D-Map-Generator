@@ -1,6 +1,6 @@
 import type { CaveMetadata } from '../generators/CaveGenerator';
 import type { DungeonMetadata } from '../generators/DungeonGenerator';
-import { blockSize, ensurePixiApp, generateTilemap, OUTPUT_HEIGHT, OUTPUT_WIDTH, paintGrid, paintTilemap } from './PixiRenderer';
+import { ensurePixiApp, generateTilemap, OUTPUT_HEIGHT, OUTPUT_WIDTH, paintGrid, paintTilemap } from './PixiRenderer';
 // Vite bundles each worker as a separate chunk via the ?worker suffix
 import CaveWorker from '../workers/caveWorker.ts?worker';
 import DungeonWorker from '../workers/dungeonWorker.ts?worker';
@@ -77,22 +77,22 @@ function runDungeonWorker(
 // ---------------------------------------------------------------------------
 
 /** Generates a cave map, renders it, and returns its metadata. */
-async function generateCave(seed: number, container: HTMLDivElement, preferDiagonal: boolean, useTilemap: boolean): Promise<CaveMetadata | null> {
+async function generateCave(seed: number, container: HTMLDivElement, preferDiagonal: boolean, useTilemap: boolean, cellSize: number): Promise<CaveMetadata | null> {
   if (isGenerating) { return null; }
   isGenerating = true;
   let result: CaveMetadata | null = null;
 
   try {
-    const gridWidth  = Math.floor(OUTPUT_WIDTH  / blockSize);
-    const gridHeight = Math.floor(OUTPUT_HEIGHT / blockSize);
+    const gridWidth  = Math.floor(OUTPUT_WIDTH  / cellSize);
+    const gridHeight = Math.floor(OUTPUT_HEIGHT / cellSize);
     const { grid, metadata } = await runCaveWorker(seed, gridWidth, gridHeight, preferDiagonal);
     result = metadata;
 
     await ensurePixiApp(container, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     if (useTilemap) {
-      paintTilemap(generateTilemap(grid), grid, { floorColor: 0xC2C3C7, wallColor: 0x1a1a1a });
+      paintTilemap(generateTilemap(grid), grid, { cellSize, floorColor: 0xC2C3C7, wallColor: 0x1a1a1a });
     } else {
-      paintGrid(grid, { floorColor: 0x5C4033, wallFlatColor: 0x1a1a1a });
+      paintGrid(grid, { cellSize, floorColor: 0x5C4033, wallFlatColor: 0x1a1a1a });
     }
   } finally {
     isGenerating = false;
@@ -102,22 +102,22 @@ async function generateCave(seed: number, container: HTMLDivElement, preferDiago
 }
 
 /** Generates a dungeon map, renders it, and returns its metadata. */
-async function generateDungeon(seed: number, container: HTMLDivElement, preferDiagonal: boolean, useTilemap: boolean): Promise<DungeonMetadata | null> {
+async function generateDungeon(seed: number, container: HTMLDivElement, preferDiagonal: boolean, useTilemap: boolean, cellSize: number): Promise<DungeonMetadata | null> {
   if (isGenerating) { return null; }
   isGenerating = true;
   let result: DungeonMetadata | null = null;
 
   try {
-    const gridWidth  = Math.floor(OUTPUT_WIDTH  / blockSize);
-    const gridHeight = Math.floor(OUTPUT_HEIGHT / blockSize);
+    const gridWidth  = Math.floor(OUTPUT_WIDTH  / cellSize);
+    const gridHeight = Math.floor(OUTPUT_HEIGHT / cellSize);
     const { grid, metadata } = await runDungeonWorker(seed, gridWidth, gridHeight, preferDiagonal);
     result = metadata;
 
     await ensurePixiApp(container, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     if (useTilemap) {
-      paintTilemap(generateTilemap(grid), grid, { floorColor: 0xC2C3C7, wallColor: 0x1a1a1a });
+      paintTilemap(generateTilemap(grid), grid, { cellSize, floorColor: 0xC2C3C7, wallColor: 0x1a1a1a });
     } else {
-      paintGrid(grid, { floorColor: 0xC2C3C7, wallFlatColor: 0x1a1a1a });
+      paintGrid(grid, { cellSize, floorColor: 0xC2C3C7, wallFlatColor: 0x1a1a1a });
     }
   } finally {
     isGenerating = false;
@@ -136,13 +136,14 @@ export async function GenerateMap(
   mapType: string | null,
   container: HTMLDivElement | null,
   preferDiagonal: boolean = true,
-  useTilemap: boolean = false
+  useTilemap: boolean = false,
+  cellSize: number = 8
 ): Promise<MapMetadata | null> {
   if (container === null) { return null; }
 
   switch (mapType) {
-    case 'Cave':    return await generateCave(seed, container, preferDiagonal, useTilemap);
-    case 'Dungeon': return await generateDungeon(seed, container, preferDiagonal, useTilemap);
+    case 'Cave':    return await generateCave(seed, container, preferDiagonal, useTilemap, cellSize);
+    case 'Dungeon': return await generateDungeon(seed, container, preferDiagonal, useTilemap, cellSize);
     default:        return null;
   }
 }
